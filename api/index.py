@@ -1,15 +1,17 @@
-from flask import Flask, redirect, abort
+from flask import Flask, redirect
 import requests
 import re
 
 app = Flask(__name__)
 
-def get_live_link(dizi_adi, bolum):
-    # Denenecek siteler (Diziyo örneği)
-    url = f"https://diziyo.sh/izle/{dizi_adi}-{bolum}-bolum"
+def get_live_link(dizi_slug, bolum_no):
+    # Yeni site yapısına göre link oluşturma
+    # Örnek: https://filmhane.art/dizi/asylum/sezon-1/bolum-1
+    url = f"https://filmhane.art/dizi/{dizi_slug}/sezon-1/bolum-{bolum_no}"
+    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://diziyo.sh/"
+        "Referer": "https://filmhane.art/"
     }
     
     try:
@@ -34,20 +36,18 @@ def get_live_link(dizi_adi, bolum):
             except:
                 continue
     except Exception as e:
-        print(f"Scraping Hatasi: {e}")
+        print(f"Hata: {e}")
         return None
     return None
 
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API Aktif! V162.6 Hazır."
+    return "Stream API Aktif. Filmhane altyapısı devrede."
 
 @app.route('/yayin/<dizi>/<bolum>')
 def stream(dizi, bolum):
     final_link = get_live_link(dizi, bolum)
     if final_link:
-        # Link bulunduysa yönlendir
         return redirect(final_link, code=302)
     else:
-        # Link bulunamazsa 404 dön ve sistemi çökertme
-        return "Üzgünüm Aksaçlı, bu bölümün taze linki şu an bulunamadı.", 404
+        return "Taze link bulunamadı, site yapısı veya dizi adı hatalı olabilir.", 404
