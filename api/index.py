@@ -51,3 +51,11 @@ def stream(dizi, bolum):
         return redirect(final_link, code=302)
     else:
         return "Taze link bulunamadı, site yapısı veya dizi adı hatalı olabilir.", 404
+# ... üstteki dizi kodları ...
+
+    # --- FİLMLER ---
+    elif dizi_adi == "28-yil-sonra":
+        # Filmin direkt sayfa linki
+        url = "https://filmhane.art/film/28-yil-sonra-kemik-tapinagi"
+
+    # ... kodun devamı (requests.get vs.) ...
