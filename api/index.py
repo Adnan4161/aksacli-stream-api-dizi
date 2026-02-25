@@ -5,9 +5,16 @@ import re
 app = Flask(__name__)
 
 def get_live_link(dizi_slug, bolum_no):
-    # Yeni site yapısına göre link oluşturma
+    # 1. Varsayılan URL yapısını belirle (Standart Diziler için)
     # Örnek: https://filmhane.art/dizi/asylum/sezon-1/bolum-1
     url = f"https://filmhane.art/dizi/{dizi_slug}/sezon-1/bolum-{bolum_no}"
+
+    # 2. ÖZEL DURUMLAR (FİLMLER BURAYA EKLENECEK)
+    # Eğer gelen istek "28-yil-sonra" ise URL'i film linkiyle değiştiriyoruz.
+    if dizi_slug == "28-yil-sonra":
+        url = "https://filmhane.art/film/28-yil-sonra-kemik-tapinagi"
+
+    # --- Diğer özel diziler veya filmler buraya elif ile eklenebilir ---
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -15,11 +22,12 @@ def get_live_link(dizi_slug, bolum_no):
     }
     
     try:
+        # Belirlenen URL'e istek at
         res = requests.get(url, headers=headers, timeout=15)
         if res.status_code != 200:
             return None
             
-        # 1. Yöntem: Sayfa içinde m3u8 ara
+        # 1. Yöntem: Sayfa içinde direkt m3u8 ara
         match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', res.text)
         if match:
             return match.group(1).replace('\\', '')
@@ -51,11 +59,3 @@ def stream(dizi, bolum):
         return redirect(final_link, code=302)
     else:
         return "Taze link bulunamadı, site yapısı veya dizi adı hatalı olabilir.", 404
-# ... üstteki dizi kodları ...
-
-    # --- FİLMLER ---
-    elif dizi_adi == "28-yil-sonra":
-        # Filmin direkt sayfa linki
-        url = "https://filmhane.art/film/28-yil-sonra-kemik-tapinagi"
-
-    # ... kodun devamı (requests.get vs.) ...
