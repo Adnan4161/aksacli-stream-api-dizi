@@ -4,15 +4,15 @@ import re
 
 app = Flask(__name__)
 
-# --- ORTAK AYARLAR ---
-# Gerçek bir Chrome tarayıcısı gibi görünmek için detaylı User-Agent
+# --- ORTAK TARAYICI AYARLARI ---
 HEADERS_COMMON = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# --- MOTOR 1: FİLMHANE MOTORU (Çalışan Eski Sistem) ---
+# -----------------------------------------------------------
+# MOTOR 1: FİLMHANE (Diziler ve 28 Yıl Sonra için - ÇALIŞAN)
+# -----------------------------------------------------------
 def fetch_from_filmhane(target_url):
     headers = HEADERS_COMMON.copy()
     headers["Referer"] = "https://filmhane.art/"
@@ -37,76 +37,76 @@ def fetch_from_filmhane(target_url):
     except: return None
     return None
 
-# --- MOTOR 2: HDFİLMİZLE MOTORU (GÜÇLENDİRİLMİŞ DERİN TARAMA) ---
-def fetch_from_hdfilmizle(target_url):
+# -----------------------------------------------------------
+# MOTOR 2: FİLMİZYON (Yeni Site - Uçurum Filmi İçin)
+# -----------------------------------------------------------
+def fetch_from_filmizyon(target_url):
     headers = HEADERS_COMMON.copy()
-    headers["Referer"] = "https://www.hdfilmizle.life/"
+    # En önemli kısım: Siteye "Ben senin ana sayfandan geliyorum" diyoruz
+    headers["Referer"] = "https://www.filmizyon.com/"
     
     try:
+        print(f"Filmizyon taranıyor: {target_url}")
         res = requests.get(target_url, headers=headers, timeout=10)
         
-        # Site açılmıyorsa zorlama
-        if res.status_code != 200: return None
+        if res.status_code != 200: 
+            print("Siteye erişilemedi.")
+            return None
         
-        # Taktik 1: "file": "http..." yapısını ara (Genelde playerlar böyle saklar)
-        file_match = re.search(r'file\s*:\s*["\'](https?://[^"\']+\.(?:mp4|m3u8)[^"\']*)["\']', res.text)
-        if file_match: return file_match.group(1)
-
-        # Taktik 2: Standart m3u8/mp4 arama
-        link_match = re.search(r'["\'](https?://[^\s^"^\']+\.(?:m3u8|mp4)[^\s^"^\']*)["\']', res.text)
-        if link_match: return link_match.group(1).replace('\\', '')
-
-        # Taktik 3: iFrame ve Data-Src Taraması
-        # Sadece src değil, data-src özelliklerine de bakıyoruz
-        iframes = re.findall(r'<iframe.*?(?:src|data-src)=["\'](.*?)["\']', res.text)
+        # 1. iFrame Taraması (Filmizyon genelde iframe kullanır)
+        iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
         
         for if_url in iframes:
             if if_url.startswith('//'): if_url = "https:" + if_url
-            if "facebook" in if_url or "twitter" in if_url: continue # Reklamları geç
             
+            # Reklamları atla
+            if "youtube" in if_url or "google" in if_url: continue
+
             try:
-                # İframe içine girerken o sayfanın referansını verelim
-                if_headers = headers.copy()
-                if_headers["Referer"] = target_url
+                # İframe'in içine girerken de Filmizyon kimliğini koru
+                iframe_headers = headers.copy()
+                iframe_headers["Referer"] = target_url # Referans olarak filmin sayfasını göster
                 
-                if_res = requests.get(if_url, headers=if_headers, timeout=5)
+                if_res = requests.get(if_url, headers=iframe_headers, timeout=6)
                 
-                # İframe içinde "file": "..." ara
-                if_file = re.search(r'file\s*:\s*["\'](https?://[^"\']+\.(?:mp4|m3u8)[^"\']*)["\']', if_res.text)
-                if if_file: return if_file.group(1)
-                
-                # İframe içinde normal link ara
-                if_link = re.search(r'["\'](https?://[^\s^"^\']+\.(?:m3u8|mp4)[^\s^"^\']*)["\']', if_res.text)
-                if if_link: return if_link.group(1).replace('\\', '')
-                
+                # İframe içinde m3u8 veya mp4 ara
+                match = re.search(r'["\'](https?://[^\s^"^\']+\.(?:m3u8|mp4)[^\s^"^\']*)["\']', if_res.text)
+                if match: 
+                    clean_link = match.group(1).replace('\\', '')
+                    print(f"Link bulundu: {clean_link}")
+                    return clean_link
             except: continue
             
+        # 2. Eğer iframe yoksa sayfada direkt link ara (Yedek plan)
+        match = re.search(r'["\'](https?://[^\s^"^\']+\.(?:m3u8|mp4)[^\s^"^\']*)["\']', res.text)
+        if match: return match.group(1).replace('\\', '')
+
     except Exception as e:
-        print(f"Hata: {e}")
+        print(f"Filmizyon Hatası: {e}")
         return None
     return None
 
+# -----------------------------------------------------------
+# YÖNLENDİRME MERKEZİ (ROUTER)
+# -----------------------------------------------------------
 def get_live_link(dizi_slug, bolum_no):
     
-    # --- YÖNLENDİRME MERKEZİ ---
-    
-    # 1. HDFilmizle Filmleri (Uçurum)
+    # 1. SENARYO: "Uçurum" istenirse -> FİLMİZYON'a git
     if dizi_slug == "ucurum-2026":
-        return fetch_from_hdfilmizle("https://www.hdfilmizle.life/ucurum-2026/")
+        return fetch_from_filmizyon("https://www.filmizyon.com/film/ucurum/")
 
-    # 2. Filmhane Filmleri (28 Yıl Sonra)
+    # 2. SENARYO: "28 Yıl Sonra" istenirse -> FİLMHANE'ye git (Eski çalışan ayar)
     elif dizi_slug == "28-yil-sonra":
         return fetch_from_filmhane("https://filmhane.art/film/28-yil-sonra-kemik-tapinagi")
 
-    # 3. Varsayılan Diziler (Filmhane)
+    # 3. SENARYO: Diğer her şey (Diziler) -> FİLMHANE'ye git (Standart)
     else:
-        # Dizi linki
         url = f"https://filmhane.art/dizi/{dizi_slug}/sezon-1/bolum-{bolum_no}"
         return fetch_from_filmhane(url)
 
 @app.route('/')
 def home():
-    return "Stream API V165.0 - Derin Tarama Modu"
+    return "Stream API V166.0 - Filmizyon Entegreli."
 
 @app.route('/yayin/<dizi>/<bolum>')
 def stream(dizi, bolum):
