@@ -4,73 +4,40 @@ import re
 
 app = Flask(__name__)
 
-def get_live_link(dizi_slug, bolum_no):
-    # ----------------------------------------------------------------
-    # ADIM 1: URL BELİRLEME (Hangi yemeği istiyoruz?)
-    # ----------------------------------------------------------------
-    
-    # Varsayılan: Standart Filmhane Dizi Linki
-    url = f"https://filmhane.art/dizi/{dizi_slug}/sezon-1/bolum-{bolum_no}"
-    site_tipi = "filmhane" # Varsayılan site
+# --- ORTAK AYARLAR ---
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-    # --- ÖZEL DURUMLAR (İSTİSNALAR) ---
-    
-    # 1. İstisna: Filmhane'deki Film (28 Yıl Sonra)
-    if dizi_slug == "28-yil-sonra":
-        url = "https://filmhane.art/film/28-yil-sonra-kemik-tapinagi"
-        site_tipi = "filmhane"
-
-    # 2. İstisna: Yeni Site (Uçurum 2026)
-    elif dizi_slug == "ucurum-2026":
-        url = "https://www.hdfilmizle.life/ucurum-2026/"
-        site_tipi = "hdfilmizle"
-        
-    # ----------------------------------------------------------------
-    # ADIM 2: KİMLİK (HEADER) AYARLAMA (Kapıdan nasıl gireceğiz?)
-    # ----------------------------------------------------------------
-    
+def scrape_m3u8(target_url, referer_url):
+    """
+    Verilen URL'e gider, o sitenin Referer'ını kullanarak m3u8 veya mp4 arar.
+    """
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": USER_AGENT,
+        "Referer": referer_url
     }
-
-    # Siteye göre kimlik kartını değiştiriyoruz
-    if site_tipi == "filmhane":
-        headers["Referer"] = "https://filmhane.art/"
-    elif site_tipi == "hdfilmizle":
-        headers["Referer"] = "https://www.hdfilmizle.life/"
-
-    # ----------------------------------------------------------------
-    # ADIM 3: İSTEK VE VİDEO BULMA (Mutfağa girip yemeği alma)
-    # ----------------------------------------------------------------
     
     try:
-        # Ana sayfaya git
-        res = requests.get(url, headers=headers, timeout=10)
+        print(f"İstek atılıyor: {target_url} (Ref: {referer_url})")
+        res = requests.get(target_url, headers=headers, timeout=10)
         
-        # Eğer sayfa açılmazsa (404 veya 403 hatası)
         if res.status_code != 200:
             return None
-            
-        # YÖNTEM A: Sayfa kaynağında direkt .m3u8 veya .mp4 ara
+
+        # 1. Direkt Link Arama (.m3u8 veya .mp4)
+        # Tırnak işaretleri arasındaki linkleri bulur
         match = re.search(r'["\'](https?://[^\s^"^\']+\.(?:m3u8|mp4)[^\s^"^\']*)["\']', res.text)
         if match:
             return match.group(1).replace('\\', '')
-        
-        # YÖNTEM B: Sayfa içindeki iFrame'leri (pencereleri) tara
+
+        # 2. iFrame Arama (Video başka bir kutu içindeyse)
         iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
-        
         for if_url in iframes:
-            # Link eksikse tamamla (//site.com -> https://site.com)
-            if if_url.startswith('//'): 
-                if_url = "https:" + if_url
+            if if_url.startswith('//'): if_url = "https:" + if_url
             
-            # iFrame için de doğru kimliği kullanalım
-            # Eğer iframe linki ana siteyle aynıysa aynı referer, farklıysa boş ver.
-            if_headers = headers.copy()
-            
+            # iFrame'in kendi domainine göre referer gerekebilir ama genellikle ana site yeterlidir.
+            # Yine de iframe'e giderken de aynı kimliği gösterelim.
             try:
-                if_res = requests.get(if_url, headers=if_headers, timeout=5)
-                # İframe içinde video linki ara
+                if_res = requests.get(if_url, headers=headers, timeout=5)
                 if_match = re.search(r'["\'](https?://[^\s^"^\']+\.(?:m3u8|mp4)[^\s^"^\']*)["\']', if_res.text)
                 if if_match:
                     return if_match.group(1).replace('\\', '')
@@ -78,14 +45,39 @@ def get_live_link(dizi_slug, bolum_no):
                 continue
 
     except Exception as e:
-        print(f"Hata: {e}")
+        print(f"Hata oluştu: {e}")
         return None
-        
+    
     return None
+
+def get_live_link(dizi_slug, bolum_no):
+    
+    # -----------------------------------------------------------
+    # SENARYO 1: HDfilmizle Sitesinden İstenen Filmler
+    # -----------------------------------------------------------
+    if dizi_slug == "ucurum-2026":
+        url = "https://www.hdfilmizle.life/ucurum-2026/"
+        # Bu sitenin kapısından girerken bu kimliği göstereceğiz
+        return scrape_m3u8(url, "https://www.hdfilmizle.life/")
+
+    # -----------------------------------------------------------
+    # SENARYO 2: Filmhane Sitesinden İstenen Özel Filmler
+    # -----------------------------------------------------------
+    elif dizi_slug == "28-yil-sonra":
+        url = "https://filmhane.art/film/28-yil-sonra-kemik-tapinagi"
+        return scrape_m3u8(url, "https://filmhane.art/")
+
+    # -----------------------------------------------------------
+    # SENARYO 3: Varsayılan (Standart Diziler - Filmhane)
+    # -----------------------------------------------------------
+    else:
+        # Standart dizi link yapısı
+        url = f"https://filmhane.art/dizi/{dizi_slug}/sezon-1/bolum-{bolum_no}"
+        return scrape_m3u8(url, "https://filmhane.art/")
 
 @app.route('/')
 def home():
-    return "Stream API Aktif. V163.0 - Aksaçlı Final."
+    return "Stream API Aktif. V163.5 - Modüler Sistem."
 
 @app.route('/yayin/<dizi>/<bolum>')
 def stream(dizi, bolum):
