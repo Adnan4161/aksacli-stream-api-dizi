@@ -44,6 +44,9 @@ def stream_canli(kanal):
     elif kanal == "ntv":
         target_url = "https://www.ntv.com.tr/canli-yayin/ntv"
         HEADERS["Referer"] = "https://www.ntv.com.tr/"
+    elif kanal == "atv":
+        target_url = "https://www.atv.com.tr/iframe/canli-yayin"
+        HEADERS["Referer"] = "https://www.atv.com.tr/"    
 
     if target_url:
         final_link = fetch_dogus_media(target_url)
