@@ -1,101 +1,107 @@
-from flask import Flask, redirect, Response
+from flask import Flask, redirect
 import requests
 import re
+import json
 
 app = Flask(__name__)
 
-# --- ELİT TARAYICI KİMLİĞİ (FULL SET) ---
-# ATV'nin 'Gerçek İnsan' olduğumuza inanması için gereken tüm donanım
-CHROME_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "*/*",
-    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-    "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-site"
+# --- TARAYICI AYARLARI ---
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://www.dmax.com.tr/",
+    "Origin": "https://www.dmax.com.tr"
 }
 
 # -----------------------------------------------------------
-# MOTOR: ULTRA YAYIN AYIKLAYICI (PERSISTENT SESSION)
+# MOTOR: DOĞUŞ GRUBU TARAYICI (DMAX, TLC, NTV, STAR)
 # -----------------------------------------------------------
-def fetch_final_stream(url, ref):
+def fetch_dogus_media(url):
     try:
-        # Session kullanarak çerez ve oturum takibini zorunlu kılıyoruz
-        session = requests.Session()
-        session.headers.update(CHROME_HEADERS)
-        session.headers.update({"Referer": ref, "Origin": "https://www.atv.com.tr"})
-
-        # 1. Adım: Sayfayı derinlemesine tarıyoruz
-        res = session.get(url, timeout=15)
+        res = requests.get(url, headers=HEADERS, timeout=10)
         if res.status_code != 200: return None
         
-        # 2. Adım: Karmaşık ve gizlenmiş m3u8 yollarını yakalamak için çoklu Regex
-        # ATV bazen linki 'src' içinde, bazen 'hls' değişkeni içinde saklar
-        patterns = [
-            r'["\'](https?[:\\]+[/\\/]+[^"\'\s<>]+?\.m3u8[^"\'\s<>]*?)["\']',
-            r'file\s*:\s*["\'](.*?)["\']',
-            r'source\s*:\s*["\'](.*?)["\']'
-        ]
+        match = re.search(r'["\'](https?:?\\?/\\?/[^\s"\'<>]*?daioncdn[^\s"\'<>]*?\.m3u8[^\s"\'<>]*?)["\']', res.text)
         
-        for pattern in patterns:
-            match = re.search(pattern, res.text)
-            if match:
-                # Linkteki kaçış karakterlerini (\) ve gereksiz boşlukları temizle
-                raw_url = match.group(1)
-                clean_url = raw_url.replace('\\/', '/').replace('\\', '').strip()
-                
-                # Protokol kontrolü
-                if clean_url.startswith('//'): clean_url = "https:" + clean_url
-                
-                # Sadece geçerli bir URL ise döndür
-                if clean_url.startswith('http'):
-                    return clean_url
+        if match:
+            clean_link = match.group(1).replace('\\/', '/')
+            return clean_link
 
     except Exception as e:
-        print(f"Hata detayı: {e}")
+        return None
     return None
 
 # -----------------------------------------------------------
-# YÖNLENDİRME MERKEZİ
+# YÖNLENDİRME MERKEZİ (CANLI TV)
 # -----------------------------------------------------------
 @app.route('/canli/<kanal>')
 def stream_canli(kanal):
-    target = ""
-    referer = "https://www.google.com/"
-    
-    if kanal == "atv":
-        target = "https://www.atv.com.tr/iframe/canli-yayin"
-        referer = "https://www.atv.com.tr/"
-    elif kanal == "dmax":
-        target = "https://www.dmax.com.tr/canli-izle"
-        referer = "https://www.dmax.com.tr/"
+    target_url = ""
+    if kanal == "dmax":
+        target_url = "https://www.dmax.com.tr/canli-izle"
     elif kanal == "tlc":
-        target = "https://www.tlctv.com.tr/canli-izle"
-        referer = "https://www.tlctv.com.tr/"
+        target_url = "https://www.tlctv.com.tr/canli-izle" 
+        HEADERS["Referer"] = "https://www.tlctv.com.tr/"
     elif kanal == "ntv":
-        target = "https://www.ntv.com.tr/canli-yayin/ntv"
-        referer = "https://www.ntv.com.tr/"
+        target_url = "https://www.ntv.com.tr/canli-yayin/ntv"
+        HEADERS["Referer"] = "https://www.ntv.com.tr/"
+    elif kanal == "atv":
+        target_url = "https://www.atv.com.tr/iframe/canli-yayin"
+        HEADERS["Referer"] = "https://www.atv.com.tr/"    
 
-    if target:
-        stream_link = fetch_final_stream(target, referer)
-        if stream_link:
-            # 302 Yönlendirmesi yerine bazen 301 veya doğrudan yanıt gerekebilir
-            return redirect(stream_link, code=302)
-            
-    return f"Hata: {kanal} yayını şu an koruma altında (IP Block).", 404
+    if target_url:
+        final_link = fetch_dogus_media(target_url)
+        if final_link:
+            return redirect(final_link, code=302)
+        else:
+            return f"{kanal} bulunamadı.", 404
+    return "Bilinmeyen kanal.", 404
 
-# --- FİLM VE DİZİ AYIKLAYICI (FİLMHANE) ---
+# -----------------------------------------------------------
+# MOTOR: FİLM VE DİZİ AYIKLAYICI (FİLMHANE)
+# -----------------------------------------------------------
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
-    # (Buradaki mevcut Filmhane kodunu önceki çalışan haliyle bırakabilirsin)
-    # War Machine ve Banlieusards 3 için olan elif bloklarını koru!
-    return "Film/Dizi sistemi aktif", 200
+    # Varsayılan Dizi Şablonu
+    url = f"https://filmhane.art/dizi/{dizi}/sezon-1/bolum-{bolum}"
+    
+    # --- ÖZEL DURUMLAR VE FİLMLER ---
+    # Yeni bir film eklediğinde altına bir 'elif' eklemen yeterlidir.
+    if dizi == "28-yil-sonra": 
+        url = "https://filmhane.art/film/28-yil-sonra-kemik-tapinagi"
+    elif dizi == "war-machine": 
+        url = "https://filmhane.art/film/war-machine"
+    elif dizi == "banlieusards-3": 
+        url = "https://filmhane.art/film/banlieusards-3"
+    
+    # --------------------------------
+    
+    headers_fh = {"User-Agent": HEADERS["User-Agent"], "Referer": "https://filmhane.art/"}
+    try:
+        res = requests.get(url, headers=headers_fh, timeout=10)
+        
+        # 1. Ham sayfada m3u8 ara
+        match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', res.text)
+        if match: 
+            return redirect(match.group(1).replace('\\', ''), code=302)
+        
+        # 2. İframe içinde ara (Alternatif Playerlar)
+        iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
+        for if_url in iframes:
+            if if_url.startswith('//'): if_url = "https:" + if_url
+            try:
+                if_res = requests.get(if_url, headers=headers_fh, timeout=5)
+                if_match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', if_res.text)
+                if if_match: 
+                    return redirect(if_match.group(1).replace('\\', ''), code=302)
+            except: 
+                continue
+                
+    except Exception as e:
+        print(f"Sistem Hatası: {e}")
+        pass
+        
+    return "Yayın kaynağı şu an bulunamadı veya link değişmiş.", 404
 
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V182.5 - Final Strike Ready"
+    return "Aksaçlı Stream API V180.5 - War Machine Online"
