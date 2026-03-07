@@ -67,7 +67,7 @@ def stream_dizi(dizi, bolum):
         url = "https://filmhane.art/film/28-yil-sonra-kemik-tapinagi"
     elif dizi == "war-machine": 
         url = "https://filmhane.art/film/war-machine"
-        elif dizi == "banlieusards-3": 
+    elif dizi == "banlieusards-3": 
         url = "https://filmhane.art/film/banlieusards-3"
     
     # --------------------------------
