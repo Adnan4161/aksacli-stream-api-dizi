@@ -1,98 +1,101 @@
-from flask import Flask, redirect
+from flask import Flask, redirect, Response
 import requests
 import re
 
 app = Flask(__name__)
 
-# --- DERİN TARAYICI KİMLİĞİ ---
-# Sitenin bizi bot olarak görmemesi için tam teşekküllü headers seti
-BROWSER_HEADERS = {
+# --- ELİT TARAYICI KİMLİĞİ (FULL SET) ---
+# ATV'nin 'Gerçek İnsan' olduğumuza inanması için gereken tüm donanım
+CHROME_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept": "*/*",
     "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Cache-Control": "max-age=0"
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site"
 }
 
 # -----------------------------------------------------------
-# MOTOR: ANTI-BLOCK YAYIN AYIKLAYICI
+# MOTOR: ULTRA YAYIN AYIKLAYICI (PERSISTENT SESSION)
 # -----------------------------------------------------------
-def fetch_protected_media(url, referer_url):
+def fetch_final_stream(url, ref):
     try:
-        # requests.Session kullanarak çerez (cookie) takibi yapıyoruz, bot engelini aşmak için şarttır
+        # Session kullanarak çerez ve oturum takibini zorunlu kılıyoruz
         session = requests.Session()
-        headers = BROWSER_HEADERS.copy()
-        headers["Referer"] = referer_url
-        
-        # İlk istek: Sayfayı ve çerezleri al
-        res = session.get(url, headers=headers, timeout=12)
+        session.headers.update(CHROME_HEADERS)
+        session.headers.update({"Referer": ref, "Origin": "https://www.atv.com.tr"})
+
+        # 1. Adım: Sayfayı derinlemesine tarıyoruz
+        res = session.get(url, timeout=15)
         if res.status_code != 200: return None
         
-        # 1. Standart m3u8 linkini ara
-        # 2. Kaçış karakterli (https:\/\/...) linkleri de yakalayacak geliştirilmiş Regex
-        regex_list = [
-            r'["\'](https?:?\\?/\\?/[^\s"\'<>]*?\.m3u8[^\s"\'<>]*?)["\']',
-            r'videoSrc\s*:\s*["\'](.*?)["\']',
-            r'src\s*:\s*["\'](.*?\.m3u8.*?)["\']'
+        # 2. Adım: Karmaşık ve gizlenmiş m3u8 yollarını yakalamak için çoklu Regex
+        # ATV bazen linki 'src' içinde, bazen 'hls' değişkeni içinde saklar
+        patterns = [
+            r'["\'](https?[:\\]+[/\\/]+[^"\'\s<>]+?\.m3u8[^"\'\s<>]*?)["\']',
+            r'file\s*:\s*["\'](.*?)["\']',
+            r'source\s*:\s*["\'](.*?)["\']'
         ]
         
-        for pattern in regex_list:
+        for pattern in patterns:
             match = re.search(pattern, res.text)
             if match:
-                clean_link = match.group(1).replace('\\/', '/').replace('\\', '')
-                # Eğer link // ile başlıyorsa protokol ekle
-                if clean_link.startswith('//'): clean_link = "https:" + clean_link
-                return clean_link
+                # Linkteki kaçış karakterlerini (\) ve gereksiz boşlukları temizle
+                raw_url = match.group(1)
+                clean_url = raw_url.replace('\\/', '/').replace('\\', '').strip()
+                
+                # Protokol kontrolü
+                if clean_url.startswith('//'): clean_url = "https:" + clean_url
+                
+                # Sadece geçerli bir URL ise döndür
+                if clean_url.startswith('http'):
+                    return clean_url
 
     except Exception as e:
-        print(f"Sistem Hatası: {e}")
-        return None
+        print(f"Hata detayı: {e}")
     return None
 
 # -----------------------------------------------------------
-# YÖNLENDİRME MERKEZİ (CANLI TV)
+# YÖNLENDİRME MERKEZİ
 # -----------------------------------------------------------
 @app.route('/canli/<kanal>')
 def stream_canli(kanal):
-    target_url = ""
-    ref = "https://www.google.com/" # Güvenli başlangıç refererı
+    target = ""
+    referer = "https://www.google.com/"
     
-    if kanal == "dmax":
-        target_url = "https://www.dmax.com.tr/canli-izle"
-        ref = "https://www.dmax.com.tr/"
+    if kanal == "atv":
+        target = "https://www.atv.com.tr/iframe/canli-yayin"
+        referer = "https://www.atv.com.tr/"
+    elif kanal == "dmax":
+        target = "https://www.dmax.com.tr/canli-izle"
+        referer = "https://www.dmax.com.tr/"
     elif kanal == "tlc":
-        target_url = "https://www.tlctv.com.tr/canli-izle"
-        ref = "https://www.tlctv.com.tr/"
+        target = "https://www.tlctv.com.tr/canli-izle"
+        referer = "https://www.tlctv.com.tr/"
     elif kanal == "ntv":
-        target_url = "https://www.ntv.com.tr/canli-yayin/ntv"
-        ref = "https://www.ntv.com.tr/"
-    elif kanal == "atv":
-        # ATV Iframe linki
-        target_url = "https://www.atv.com.tr/iframe/canli-yayin"
-        ref = "https://www.atv.com.tr/"
+        target = "https://www.ntv.com.tr/canli-yayin/ntv"
+        referer = "https://www.ntv.com.tr/"
 
-    if target_url:
-        final_link = fetch_protected_media(target_url, ref)
-        if final_link:
-            return redirect(final_link, code=302)
-    
-    return f"{kanal} yayını şu an engellendi veya bulunamadı.", 404
+    if target:
+        stream_link = fetch_final_stream(target, referer)
+        if stream_link:
+            # 302 Yönlendirmesi yerine bazen 301 veya doğrudan yanıt gerekebilir
+            return redirect(stream_link, code=302)
+            
+    return f"Hata: {kanal} yayını şu an koruma altında (IP Block).", 404
 
-# -----------------------------------------------------------
-# FİLM/DİZİ MOTORU (FİLMHANE) - Mevcut yapı korundu
-# -----------------------------------------------------------
+# --- FİLM VE DİZİ AYIKLAYICI (FİLMHANE) ---
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
-    # Filmhane linkleri için mevcut mantık...
-    # (Buradaki kodun geri kalanını önceki versiyondaki gibi bırakabilirsin)
-    return "Filmhane motoru aktif", 200
+    # (Buradaki mevcut Filmhane kodunu önceki çalışan haliyle bırakabilirsin)
+    # War Machine ve Banlieusards 3 için olan elif bloklarını koru!
+    return "Film/Dizi sistemi aktif", 200
 
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V182.0 - Deep Browser Mimicry Aktif"
+    return "Aksaçlı Stream API V182.5 - Final Strike Ready"
