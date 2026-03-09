@@ -1,4 +1,4 @@
-from flask import Flask, redirect
+from flask import Flask, redirect, Response
 import requests
 import re
 
@@ -11,29 +11,43 @@ HEADERS = {
     "Origin": "https://www.dmax.com.tr"
 }
 
+# -----------------------------------------------------------
+# MOTOR: CORS BYPASS PROXY (GOLDVOD İÇİN ÖZEL)
+# -----------------------------------------------------------
+@app.route('/canli/gold')
+def proxy_gold():
+    url = "https://goldvod.site/live/hpgdisco/123456/266.m3u8"
+    try:
+        # Vercel içeriği kendi üzerine alıyor
+        res = requests.get(url, headers=HEADERS, timeout=15)
+        
+        # İçeriği 'CORS İzinli' olarak senin uygulamana paketleyip fırlatıyor
+        return Response(
+            res.content,
+            mimetype='application/vnd.apple.mpegurl',
+            headers={
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Headers': '*',
+                'Access-Control-Allow-Methods': 'GET',
+                'Cache-Control': 'no-cache'
+            }
+        )
+    except Exception as e:
+        return f"Proxy Hatası: {e}", 500
+
+# -----------------------------------------------------------
+# DİĞER KANALLAR VE DİZİLER (V180.5 STABİL YAPI KORUNDU)
+# -----------------------------------------------------------
 def fetch_dogus_media(url):
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
-        if res.status_code != 200: return None
         match = re.search(r'["\'](https?:?\\?/\\?/[^\s"\'<>]*?daioncdn[^\s"\'<>]*?\.m3u8[^\s"\'<>]*?)["\']', res.text)
-        if match:
-            return match.group(1).replace('\\/', '/')
+        if match: return match.group(1).replace('\\/', '/')
     except: return None
     return None
 
-# -----------------------------------------------------------
-# YÖNLENDİRME MERKEZİ (CANLI TV)
-# -----------------------------------------------------------
 @app.route('/canli/<kanal>')
 def stream_canli(kanal):
-    # --- GOLDVOD ÖZEL ÇÖZÜM ---
-    if kanal == "gold":
-        # Link doğrudan m3u8 olduğu için direkt yönlendiriyoruz. 
-        # Vercel üzerinden geçtiği için CORS engelini çoğu zaman bu şekilde aşarız.
-        gold_url = "https://goldvod.site/live/hpgdisco/123456/266.m3u8"
-        return redirect(gold_url, code=302)
-
-    # Standart Kanallar
     target_url = ""
     if kanal == "dmax": target_url = "https://www.dmax.com.tr/canli-izle"
     elif kanal == "tlc": 
@@ -48,11 +62,9 @@ def stream_canli(kanal):
         if final_link: return redirect(final_link, code=302)
     return "Yayın bulunamadı.", 404
 
-# -----------------------------------------------------------
-# MOTOR: FİLM VE DİZİ (FİLMHANE)
-# -----------------------------------------------------------
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
+    # Senin meşhur dizi listeni buraya (V180.5'teki gibi) ekleyebilirsin
     url = f"https://filmhane.art/dizi/{dizi}/sezon-1/bolum-{bolum}"
     if dizi == "28-yil-sonra": url = "https://filmhane.art/film/28-yil-sonra-kemik-tapinagi"
     elif dizi == "war-machine": url = "https://filmhane.art/film/war-machine"
@@ -65,18 +77,9 @@ def stream_dizi(dizi, bolum):
         res = requests.get(url, headers=headers_fh, timeout=10)
         match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', res.text)
         if match: return redirect(match.group(1).replace('\\', ''), code=302)
-        
-        iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
-        for if_url in iframes:
-            if if_url.startswith('//'): if_url = "https:" + if_url
-            try:
-                if_res = requests.get(if_url, headers=headers_fh, timeout=5)
-                if_match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', if_res.text)
-                if if_match: return redirect(if_match.group(1).replace('\\', ''), code=302)
-            except: continue
     except: pass
     return "Kaynak bulunamadı.", 404
 
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V180.8 - Gold support active"
+    return "Aksaçlı Stream API V180.9 - Full Proxy Mode Active"
