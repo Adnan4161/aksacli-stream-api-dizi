@@ -61,6 +61,7 @@ def stream_dizi(dizi, bolum):
         "war-machine": "https://filmhane.art/film/war-machine",
         "banlieusards-3": "https://filmhane.art/film/banlieusards-3",
         "kagittan-hayatlar": "https://filmhane.art/film/kagittan-hayatlar"
+        "ali-congun-ask-acisi": "https://filmhane.art/film/ali-congun-ask-acisi"
     }
     
     if dizi in films: 
