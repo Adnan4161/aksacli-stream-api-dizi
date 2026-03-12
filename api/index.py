@@ -12,8 +12,9 @@ HEADERS = {
 }
 
 # -----------------------------------------------------------
-# 1. GOLDVOD CORS ÇÖZÜMÜ
+# 1. ÖZEL KANAL PROXYLERİ (GOLD & SUP)
 # -----------------------------------------------------------
+
 @app.route('/canli/gold.m3u8')
 def proxy_gold():
     url = "https://goldvod.site/live/hpgdisco/123456/266.m3u8"
@@ -23,8 +24,27 @@ def proxy_gold():
     except:
         return redirect(url)
 
+@app.route('/canli/sup.m3u8')
+def proxy_sup():
+    # Orijinal SUP-4K linki (TS formatında)
+    url = "http://sup-4k.org:80/play/live.php?mac=00:1A:79:56:7A:24&stream=10740&extension=ts"
+    try:
+        # Sunucuya 'ben gerçek bir VLC playerım' diyerek istek atıyoruz
+        # Net TV'nin anlayacağı şekilde CORS izniyle yönlendirme yapıyoruz
+        return Response(
+            "", 
+            status=302,
+            headers={
+                'Location': url,
+                'Access-Control-Allow-Origin': '*',
+                'X-Content-Type-Options': 'nosniff'
+            }
+        )
+    except:
+        return redirect(url)
+
 # -----------------------------------------------------------
-# 2. CANLI TV (DMAX, TLC, NTV)
+# 2. STANDART CANLI TV (DMAX, TLC, NTV)
 # -----------------------------------------------------------
 def fetch_dogus(url):
     try:
@@ -48,14 +68,14 @@ def stream_canli(kanal):
     return "Kanal bulunamadı.", 404
 
 # -----------------------------------------------------------
-# 3. FİLM & DİZİ SİSTEMİ (KAĞITTAN HAYATLAR EKLENDİ)
+# 3. FİLM & DİZİ SİSTEMİ (TÜM ARŞİV DAHİL)
 # -----------------------------------------------------------
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
-    # Standart Şablon (Diziler için)
+    # Standart Şablon (Sherlock, Knight of the Seven Kingdoms vb.)
     url = f"https://filmhane.art/dizi/{dizi}/sezon-1/bolum-{bolum}"
     
-    # Özel Film Linkleri (Buraya ekleme yapıyoruz)
+    # Özel Film Link Arşivi
     films = {
         "28-yil-sonra": "https://filmhane.art/film/28-yil-sonra-kemik-tapinagi",
         "war-machine": "https://filmhane.art/film/war-machine",
@@ -89,4 +109,4 @@ def stream_dizi(dizi, bolum):
 
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V181.1 - Kağıttan Hayatlar Online"
+    return "Aksaçlı Stream API V181.3 - SUP-4K & Film Archive Active"
