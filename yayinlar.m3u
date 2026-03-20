@@ -79,3 +79,7 @@ https://aksacli-stream-api-dizi.vercel.app/yayin/young-sherlock/7
 
 #EXTINF:-1 tvg-logo="https://filmhane.art/uploads/series/original/genc-sherlock-9159.webp" group-title="Yabancı Diziler",Genç Sherlock S1 B8
 https://aksacli-stream-api-dizi.vercel.app/yayin/young-sherlock/8
+
+
+#EXTINF:-1 tvg-logo="https://www.diziler.com/wp-content/uploads/2026/03/ONBESLILER-AFIS.jpg" group-title="Onbeşliler", Onbeşliler 1. Bölüm
+https://aksacli-stream-api-dizi.vercel.app/yayin/onbesliler/1
