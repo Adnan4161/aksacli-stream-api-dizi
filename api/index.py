@@ -99,7 +99,9 @@ def stream_dizi(dizi, bolum):
         "banlieusards-3": "https://filmhane.art/film/banlieusards-3",
         "kagittan-hayatlar": "https://filmhane.art/film/kagittan-hayatlar",
         "ali-congun-ask-acisi": "https://filmhane.art/film/ali-congun-ask-acisi",
-        "the-wrecking-crew": "https://filmhane.art/film/the-wrecking-crew", # DÜZELTİLDİ
+        "the-wrecking-crew": "https://filmhane.art/film/the-wrecking-crew",
+        "peaky-blinders-the-immortal-man": "https://filmhane.art/film/peaky-blinders-the-immortal-man",
+         "zeta": "https://filmhane.art/film/zeta",
     }
     
     if dizi in films: url = films[dizi]
