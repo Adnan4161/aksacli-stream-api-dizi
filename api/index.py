@@ -21,7 +21,6 @@ def proxy_general():
     target_url = request.args.get('url')
     if not target_url: return "URL eksik", 400
     
-    # TV Kulesi'nin istediği özel kimlik bilgileri
     custom_headers = {
         "User-Agent": HEADERS["User-Agent"],
         "Referer": "https://amp.tvkulesi.com/",
@@ -30,7 +29,6 @@ def proxy_general():
     
     try:
         res = requests.get(target_url, headers=custom_headers, timeout=10)
-        # Yayını alıp Net TV'nin anlayacağı CORS izinleriyle geri gönderiyoruz
         return Response(res.content, mimetype='application/vnd.apple.mpegurl', headers={'Access-Control-Allow-Origin': '*'})
     except:
         return redirect(target_url)
@@ -61,15 +59,12 @@ def fetch_dogus(url):
 
 @app.route('/canli/<kanal>')
 def stream_canli(kanal):
-    # Doğuş Grubu (Dinamik)
     dogus = {
         "dmax": "https://www.dmax.com.tr/canli-izle",
         "tlc": "https://www.tlctv.com.tr/canli-izle",
         "ntv": "https://www.ntv.com.tr/canli-yayin/ntv"
     }
     
-    # Turkuvaz Grubu (Proxy Üzerinden Sabit Linkler)
-    # Not: Tokenlar patlarsa TV Kulesi'nden yenileriyle güncellenebilir
     turkuvaz = {
         "atv": "https://cdn504.tvkulesi.com/atv.m3u8?hst=amp.tvkulesi.com&ch=atv",
         "ahaber": "https://cdn504.tvkulesi.com/ahaber.m3u8?hst=amp.tvkulesi.com&ch=a-haber",
@@ -82,17 +77,33 @@ def stream_canli(kanal):
         if link: return redirect(link, code=302)
         
     if kanal in turkuvaz:
-        # Linki kendi proxy köprümüze sokuyoruz
         return redirect(f"/canli/proxy?url={turkuvaz[kanal]}")
 
     return "Kanal bulunamadı.", 404
 
 # -----------------------------------------------------------
-# 3. FİLM & DİZİ SİSTEMİ
+# 3. FİLM & DİZİ SİSTEMİ (GÜNCELLENMİŞ: S1B5 AKILLI TANIMA)
 # -----------------------------------------------------------
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
-    url = f"https://filmhane.art/dizi/{dizi}/sezon-1/bolum-{bolum}"
+    # Varsayılan değerler
+    sezon_no = "1"
+    bolum_no = bolum
+
+    # --- AKILLI FORMAT TANIMA (REGEX) ---
+    # S1B5, s01b05 veya sadece B5 gibi yapıları yakalar
+    s_match = re.search(r'[sS](\d+)', bolum)
+    b_match = re.search(r'[bB](\d+)', bolum)
+
+    if s_match and b_match:
+        sezon_no = s_match.group(1)
+        bolum_no = b_match.group(1)
+    elif b_match:
+        bolum_no = b_match.group(1)
+    # Rakam dışında bir şey yoksa 'bolum_no' zaten gelen 'bolum' değeridir.
+
+    url = f"https://filmhane.art/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
+    
     films = {
         "28-yil-sonra": "https://filmhane.art/film/28-yil-sonra-kemik-tapinagi",
         "war-machine": "https://filmhane.art/film/war-machine",
@@ -101,7 +112,7 @@ def stream_dizi(dizi, bolum):
         "ali-congun-ask-acisi": "https://filmhane.art/film/ali-congun-ask-acisi",
         "the-wrecking-crew": "https://filmhane.art/film/the-wrecking-crew",
         "peaky-blinders-the-immortal-man": "https://filmhane.art/film/peaky-blinders-the-immortal-man",
-         "zeta": "https://filmhane.art/film/zeta",
+        "zeta": "https://filmhane.art/film/zeta",
     }
     
     if dizi in films: url = films[dizi]
@@ -109,9 +120,12 @@ def stream_dizi(dizi, bolum):
     try:
         fh_headers = {"User-Agent": HEADERS["User-Agent"], "Referer": "https://filmhane.art/"}
         res = requests.get(url, headers=fh_headers, timeout=10)
+        
+        # Doğrudan m3u8 ara
         match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', res.text)
         if match: return redirect(match.group(1).replace('\\', ''), code=302)
         
+        # Iframe'ler içinde m3u8 ara
         iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
         for if_url in iframes:
             if if_url.startswith('//'): if_url = "https:" + if_url
@@ -125,4 +139,7 @@ def stream_dizi(dizi, bolum):
 
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V181.5 - Turkuvaz Proxy & Film Archive Active"
+    return "Aksaçlı Stream API V181.6 - Turkuvaz Proxy & Smart Series System Active"
+
+if __name__ == '__main__':
+    app.run(debug=True)
