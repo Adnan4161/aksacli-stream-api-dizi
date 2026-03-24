@@ -4,51 +4,45 @@ import re
 
 app = Flask(__name__)
 
-# --- GÜÇLENDİRİLMİŞ HEADERS ---
-# Turkuvaz Grubu bazen çok spesifik bir UA bekleyebilir
+# --- STABİL HEADERS (Orijinal Ayarlar) ---
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://www.dmax.com.tr/",
+    "Origin": "https://www.dmax.com.tr"
 }
 
 # -----------------------------------------------------------
-# 1. TURKUVAZ ÖZEL ÇEKİCİ (A HABER, ATV, A SPOR)
+# 1. ÖZEL PROXY SİSTEMLERİ (Turkuvaz & Gold Proxy)
 # -----------------------------------------------------------
 
-def fetch_turkuvaz(url):
-    """Sıkı güvenlikli Turkuvaz iframe'lerinden m3u8 yakalar"""
+@app.route('/canli/proxy')
+def proxy_general():
+    """TV Kulesi ve Turkuvaz için header maskeleme köprüsü"""
+    target_url = request.args.get('url')
+    if not target_url: return "URL eksik", 400
+    
+    custom_headers = {
+        "User-Agent": HEADERS["User-Agent"],
+        "Referer": "https://amp.tvkulesi.com/",
+        "Origin": "https://amp.tvkulesi.com"
+    }
+    
     try:
-        session = requests.Session() # Çerezleri yönetmek için session başlattık
-        
-        # Ana site referansını ekliyoruz (Önemli!)
-        main_domain = "https://www.ahaber.com.tr/"
-        if "atv" in url: main_domain = "https://www.atv.com.tr/"
-        elif "aspor" in url: main_domain = "https://www.aspor.com.tr/"
-        
-        local_headers = HEADERS.copy()
-        local_headers["Referer"] = main_domain
-        
-        # Önce iframe'e gidiyoruz
-        res = session.get(url, headers=local_headers, timeout=12)
-        
-        # HTML içinde m3u8 arıyoruz (Farklı yazım türlerini de kapsar)
-        # Regex: Tırnaklar arasındaki, içinde daioncdn ve .m3u8 geçen her şeyi alır
-        match = re.search(r'["\'](https?[:\\]+[^"\'\s<>]+?daioncdn[^"\'\s<>]+?\.m3u8[^"\'\s<>]*?)["\']', res.text)
-        
-        if match:
-            raw_link = match.group(1)
-            # Ters bölüleri ve kaçış karakterlerini temizle
-            clean_link = raw_link.replace('\\/', '/').replace('\\', '')
-            return clean_link
-            
-    except Exception as e:
-        print(f"Hata oluştu: {e}")
-        return None
-    return None
+        res = requests.get(target_url, headers=custom_headers, timeout=10)
+        return Response(res.content, mimetype='application/vnd.apple.mpegurl', headers={'Access-Control-Allow-Origin': '*'})
+    except:
+        return redirect(target_url)
+
+@app.route('/canli/gold.m3u8')
+def proxy_gold():
+    url = "https://goldvod.site/live/hpgdisco/123456/266.m3u8"
+    try:
+        res = requests.get(url, headers={"User-Agent": "VLC/3.0.18 LibVLC/3.0.18"}, timeout=10)
+        return Response(res.content, mimetype='application/vnd.apple.mpegurl', headers={'Access-Control-Allow-Origin': '*'})
+    except: return redirect(url)
 
 # -----------------------------------------------------------
-# 2. DOĞUŞ ÖZEL ÇEKİCİ (NTV, DMAX, TLC)
+# 2. CANLI TV (Doğuş & Turkuvaz Sabit Linkler)
 # -----------------------------------------------------------
 
 def fetch_dogus(url):
@@ -59,25 +53,18 @@ def fetch_dogus(url):
     except: return None
     return None
 
-# -----------------------------------------------------------
-# 3. ANA YÖNLENDİRİCİ
-# -----------------------------------------------------------
-
 @app.route('/canli/<kanal>')
 def stream_canli(kanal):
-    # Doğuş Linkleri
     dogus = {
         "dmax": "https://www.dmax.com.tr/canli-izle",
         "tlc": "https://www.tlctv.com.tr/canli-izle",
         "ntv": "https://www.ntv.com.tr/canli-yayin/ntv"
     }
     
-    # Turkuvaz İframe Linkleri
     turkuvaz = {
-        "ahaber": "https://www.ahaber.com.tr/iframe/canli-yayin",
-        "atv": "https://www.atv.com.tr/iframe/canli-yayin",
-        "aspor": "https://www.aspor.com.tr/iframe/canli-yayin",
-        "a2": "https://www.a2tv.com.tr/iframe/canli-yayin"
+        "atv": "https://cdn504.tvkulesi.com/atv.m3u8?hst=amp.tvkulesi.com&ch=atv",
+        "ahaber": "https://cdn504.tvkulesi.com/ahaber.m3u8?hst=amp.tvkulesi.com&ch=a-haber",
+        "aspor": "https://cdn504.tvkulesi.com/aspor.m3u8?hst=amp.tvkulesi.com&ch=a-spor"
     }
 
     if kanal in dogus:
@@ -85,21 +72,24 @@ def stream_canli(kanal):
         if link: return redirect(link, code=302)
         
     if kanal in turkuvaz:
-        link = fetch_turkuvaz(turkuvaz[kanal])
-        if link: return redirect(link, code=302)
+        # A haber vb. için tekrar çalışan proxy köprüsüne dönüldü
+        return redirect(f"/canli/proxy?url={turkuvaz[kanal]}")
 
-    return f"Hata: {kanal} yayını şu an çekilemiyor. Lütfen sonra tekrar dene.", 404
+    return "Kanal bulunamadı.", 404
 
 # -----------------------------------------------------------
-# 4. DİZİ SİSTEMİ (S1B5)
+# 3. FİLM & DİZİ SİSTEMİ (Çalışan Orijinal Mantık + S1B5 Desteği)
 # -----------------------------------------------------------
 
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
     sezon_no = "1"
     bolum_no = bolum
+
+    # S1B5 formatını yine de tanıyalım, filmleri bozmaz kolaylık sağlar
     s_match = re.search(r'[sS](\d+)', bolum)
     b_match = re.search(r'[bB](\d+)', bolum)
+
     if s_match and b_match:
         sezon_no = s_match.group(1)
         bolum_no = b_match.group(1)
@@ -107,17 +97,43 @@ def stream_dizi(dizi, bolum):
         bolum_no = b_match.group(1)
 
     url = f"https://filmhane.art/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
+    
+    films = {
+        "28-yil-sonra": "https://filmhane.art/film/28-yil-sonra-kemik-tapinagi",
+        "war-machine": "https://filmhane.art/film/war-machine",
+        "banlieusards-3": "https://filmhane.art/film/banlieusards-3",
+        "kagittan-hayatlar": "https://filmhane.art/film/kagittan-hayatlar",
+        "ali-congun-ask-acisi": "https://filmhane.art/film/ali-congun-ask-acisi",
+        "the-wrecking-crew": "https://filmhane.art/film/the-wrecking-crew",
+        "peaky-blinders-the-immortal-man": "https://filmhane.art/film/peaky-blinders-the-immortal-man",
+        "zeta": "https://filmhane.art/film/zeta",
+    }
+    
+    if dizi in films: url = films[dizi]
+    
     try:
         fh_headers = {"User-Agent": HEADERS["User-Agent"], "Referer": "https://filmhane.art/"}
         res = requests.get(url, headers=fh_headers, timeout=10)
+        
+        # Orijinal m3u8 tarama mantığı
         match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', res.text)
         if match: return redirect(match.group(1).replace('\\', ''), code=302)
+        
+        # Iframe tarama mantığı (Geri getirildi)
+        iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
+        for if_url in iframes:
+            if if_url.startswith('//'): if_url = "https:" + if_url
+            try:
+                if_res = requests.get(if_url, headers=fh_headers, timeout=5)
+                if_match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', if_res.text)
+                if if_match: return redirect(if_match.group(1).replace('\\', ''), code=302)
+            except: continue
     except: pass
     return "Yayın bulunamadı.", 404
 
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V181.8 - Stealth Turkuvaz Active"
+    return "Aksaçlı Stream API V181.9 - Stabil Versiyona Dönüldü"
 
 if __name__ == '__main__':
     app.run(debug=True)
