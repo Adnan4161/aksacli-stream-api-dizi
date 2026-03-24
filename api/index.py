@@ -4,7 +4,7 @@ import re
 
 app = Flask(__name__)
 
-# --- STABİL HEADERS (Orijinal Ayarlar) ---
+# --- STABİL HEADERS ---
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Referer": "https://www.dmax.com.tr/",
@@ -12,12 +12,12 @@ HEADERS = {
 }
 
 # -----------------------------------------------------------
-# 1. ÖZEL PROXY SİSTEMLERİ (Turkuvaz & Gold Proxy)
+# 1. ÖZEL PROXY SİSTEMLERİ (ATV & AHABER BURADA)
 # -----------------------------------------------------------
 
 @app.route('/canli/proxy')
 def proxy_general():
-    """TV Kulesi ve Turkuvaz için header maskeleme köprüsü"""
+    """TV Kulesi ve benzeri zorlu linkler için header maskeleme köprüsü"""
     target_url = request.args.get('url')
     if not target_url: return "URL eksik", 400
     
@@ -41,10 +41,14 @@ def proxy_gold():
         return Response(res.content, mimetype='application/vnd.apple.mpegurl', headers={'Access-Control-Allow-Origin': '*'})
     except: return redirect(url)
 
-# -----------------------------------------------------------
-# 2. CANLI TV (Doğuş & Turkuvaz Sabit Linkler)
-# -----------------------------------------------------------
+@app.route('/canli/sup.m3u8')
+def proxy_sup():
+    url = "http://sup-4k.org:80/play/live.php?mac=00:1A:79:56:7A:24&stream=10740&extension=ts"
+    return Response("", status=302, headers={'Location': url, 'Access-Control-Allow-Origin': '*', 'X-Content-Type-Options': 'nosniff'})
 
+# -----------------------------------------------------------
+# 2. STANDART CANLI TV (DMAX, TLC, NTV, ATV, AHABER)
+# -----------------------------------------------------------
 def fetch_dogus(url):
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
@@ -68,25 +72,26 @@ def stream_canli(kanal):
     }
 
     if kanal in dogus:
+        HEADERS["Referer"] = dogus[kanal].replace("canli-izle", "")
         link = fetch_dogus(dogus[kanal])
         if link: return redirect(link, code=302)
         
     if kanal in turkuvaz:
-        # A haber vb. için tekrar çalışan proxy köprüsüne dönüldü
         return redirect(f"/canli/proxy?url={turkuvaz[kanal]}")
 
     return "Kanal bulunamadı.", 404
 
 # -----------------------------------------------------------
-# 3. FİLM & DİZİ SİSTEMİ (Çalışan Orijinal Mantık + S1B5 Desteği)
+# 3. FİLM & DİZİ SİSTEMİ (GÜNCELLENMİŞ: S1B5 AKILLI TANIMA)
 # -----------------------------------------------------------
-
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
+    # Varsayılan değerler
     sezon_no = "1"
     bolum_no = bolum
 
-    # S1B5 formatını yine de tanıyalım, filmleri bozmaz kolaylık sağlar
+    # --- AKILLI FORMAT TANIMA (REGEX) ---
+    # S1B5, s01b05 veya sadece B5 gibi yapıları yakalar
     s_match = re.search(r'[sS](\d+)', bolum)
     b_match = re.search(r'[bB](\d+)', bolum)
 
@@ -95,6 +100,7 @@ def stream_dizi(dizi, bolum):
         bolum_no = b_match.group(1)
     elif b_match:
         bolum_no = b_match.group(1)
+    # Rakam dışında bir şey yoksa 'bolum_no' zaten gelen 'bolum' değeridir.
 
     url = f"https://filmhane.art/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
     
@@ -115,11 +121,11 @@ def stream_dizi(dizi, bolum):
         fh_headers = {"User-Agent": HEADERS["User-Agent"], "Referer": "https://filmhane.art/"}
         res = requests.get(url, headers=fh_headers, timeout=10)
         
-        # Orijinal m3u8 tarama mantığı
+        # Doğrudan m3u8 ara
         match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', res.text)
         if match: return redirect(match.group(1).replace('\\', ''), code=302)
         
-        # Iframe tarama mantığı (Geri getirildi)
+        # Iframe'ler içinde m3u8 ara
         iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
         for if_url in iframes:
             if if_url.startswith('//'): if_url = "https:" + if_url
@@ -133,7 +139,7 @@ def stream_dizi(dizi, bolum):
 
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V181.9 - Stabil Versiyona Dönüldü"
+    return "Aksaçlı Stream API V181.6 - Turkuvaz Proxy & Smart Series System Active"
 
 if __name__ == '__main__':
     app.run(debug=True)
