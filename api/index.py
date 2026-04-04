@@ -82,11 +82,10 @@ def stream_canli(kanal):
     return "Kanal bulunamadı.", 404
 
 # -----------------------------------------------------------
-# 3. FİLMHANE SİSTEMİ (DOMAIN GÜNCELLENDİ: .FIT)
+# 3. FİLMHANE SİSTEMİ (DOMAIN: .FIT)
 # -----------------------------------------------------------
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
-    # Domain değişirse sadece burayı değiştirmen yeterli
     base_domain = "https://filmhane.fit" 
     
     sezon_no = "1"
@@ -116,11 +115,9 @@ def stream_dizi(dizi, bolum):
         fh_headers = {"User-Agent": HEADERS["User-Agent"], "Referer": f"{base_domain}/"}
         res = requests.get(url, headers=fh_headers, timeout=10)
         
-        # Doğrudan m3u8 ara
         match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', res.text)
         if match: return redirect(match.group(1).replace('\\', ''), code=302)
         
-        # Iframe'ler içinde m3u8 ara
         iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
         for if_url in iframes:
             if if_url.startswith('//'): if_url = "https:" + if_url
@@ -158,9 +155,46 @@ def stream_dizipal(slug):
     except: pass
     return "Dizipal yayını bulunamadı.", 404
 
+# -----------------------------------------------------------
+# 5. DİZİYOU SİSTEMİ (YENİ SİSTEM - TR DUBLAJ ODAKLI)
+# -----------------------------------------------------------
+@app.route('/yayin/diziyou/<slug>')
+def stream_diziyou(slug):
+    """
+    Kullanım: /yayin/diziyou/daredevil-born-again-1-sezon-9-bolum
+    """
+    base_url = "https://www.diziyou.one"
+    url = f"{base_url}/{slug}/"
+    try:
+        dy_headers = {"User-Agent": HEADERS["User-Agent"], "Referer": base_url}
+        res = requests.get(url, headers=dy_headers, timeout=10)
+        
+        # Sayfa içindeki 'episode_id' veya 'video-id' gibi sayısal kimliği yakala
+        # Genellikle JavaScript değişkeni veya data-id olarak bulunur.
+        id_match = re.search(r'(?:episode_id|id|data-id)\s*[:=]\s*["\'](\d+)["\']', res.text)
+        
+        if id_match:
+            episode_id = id_match.group(1)
+            # Senin verdiğin TR dublaj mantığına göre linki inşa et
+            # Örnek: https://storage.diziyou.one/episodes/120409_tr/1080p.m3u8
+            final_m3u8 = f"https://storage.diziyou.one/episodes/{episode_id}_tr/1080p.m3u8"
+            return redirect(final_m3u8, code=302)
+        
+        # Eğer yukarıdaki ID bulunamazsa standart m3u8 araması yap
+        m3u_match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', res.text)
+        if m3u_match: return redirect(m3u_match.group(1).replace('\\', ''), code=302)
+        
+    except Exception as e:
+        print(f"Diziyou Error: {e}")
+        
+    return "Diziyou yayını bulunamadı.", 404
+
+# -----------------------------------------------------------
+# ANA SAYFA
+# -----------------------------------------------------------
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V183.1 - Filmhane (.fit) & Dizipal & Turkuvaz Active"
+    return "Aksaçlı Stream API V184.5 - Diziyou (TR Dublaj) & Filmhane & Dizipal & Turkuvaz Active"
 
 if __name__ == '__main__':
     app.run(debug=True)
