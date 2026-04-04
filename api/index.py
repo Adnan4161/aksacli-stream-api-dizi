@@ -12,7 +12,7 @@ HEADERS = {
 }
 
 # -----------------------------------------------------------
-# 1. ÖZEL PROXY SİSTEMLERİ (ATV & AHABER BURADA)
+# 1. ÖZEL PROXY SİSTEMLERİ (ATV & AHABER & GOLD)
 # -----------------------------------------------------------
 
 @app.route('/canli/proxy')
@@ -82,16 +82,16 @@ def stream_canli(kanal):
     return "Kanal bulunamadı.", 404
 
 # -----------------------------------------------------------
-# 3. FİLM & DİZİ SİSTEMİ (GÜNCELLENMİŞ: S1B5 AKILLI TANIMA)
+# 3. FİLMHANE SİSTEMİ (DOMAIN GÜNCELLENDİ: .FIT)
 # -----------------------------------------------------------
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
-    # Varsayılan değerler
+    # Domain değişirse sadece burayı değiştirmen yeterli
+    base_domain = "https://filmhane.fit" 
+    
     sezon_no = "1"
     bolum_no = bolum
 
-    # --- AKILLI FORMAT TANIMA (REGEX) ---
-    # S1B5, s01b05 veya sadece B5 gibi yapıları yakalar
     s_match = re.search(r'[sS](\d+)', bolum)
     b_match = re.search(r'[bB](\d+)', bolum)
 
@@ -100,25 +100,20 @@ def stream_dizi(dizi, bolum):
         bolum_no = b_match.group(1)
     elif b_match:
         bolum_no = b_match.group(1)
-    # Rakam dışında bir şey yoksa 'bolum_no' zaten gelen 'bolum' değeridir.
 
-    url = f"https://filmhane.art/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
+    url = f"{base_domain}/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
     
     films = {
-        "28-yil-sonra": "https://filmhane.art/film/28-yil-sonra-kemik-tapinagi",
-        "war-machine": "https://filmhane.art/film/war-machine",
-        "banlieusards-3": "https://filmhane.art/film/banlieusards-3",
-        "kagittan-hayatlar": "https://filmhane.art/film/kagittan-hayatlar",
-        "ali-congun-ask-acisi": "https://filmhane.art/film/ali-congun-ask-acisi",
-        "the-wrecking-crew": "https://filmhane.art/film/the-wrecking-crew",
-        "peaky-blinders-the-immortal-man": "https://filmhane.art/film/peaky-blinders-the-immortal-man",
-        "zeta": "https://filmhane.art/film/zeta",
+        "28-yil-sonra": f"{base_domain}/film/28-yil-sonra-kemik-tapinagi",
+        "war-machine": f"{base_domain}/film/war-machine",
+        "banlieusards-3": f"{base_domain}/film/banlieusards-3",
+        "zeta": f"{base_domain}/film/zeta",
     }
     
     if dizi in films: url = films[dizi]
     
     try:
-        fh_headers = {"User-Agent": HEADERS["User-Agent"], "Referer": "https://filmhane.art/"}
+        fh_headers = {"User-Agent": HEADERS["User-Agent"], "Referer": f"{base_domain}/"}
         res = requests.get(url, headers=fh_headers, timeout=10)
         
         # Doğrudan m3u8 ara
@@ -137,9 +132,35 @@ def stream_dizi(dizi, bolum):
     except: pass
     return "Yayın bulunamadı.", 404
 
+# -----------------------------------------------------------
+# 4. DİZİPAL SİSTEMİ
+# -----------------------------------------------------------
+@app.route('/yayin/dizipal/<slug>')
+def stream_dizipal(slug):
+    base_url = "https://dizipal.im"
+    url = f"{base_url}/bolum/{slug}/"
+    try:
+        dp_headers = {"User-Agent": HEADERS["User-Agent"], "Referer": base_url}
+        res = requests.get(url, headers=dp_headers, timeout=10)
+        
+        match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', res.text)
+        if match: return redirect(match.group(1).replace('\\', ''), code=302)
+        
+        iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
+        for if_url in iframes:
+            if if_url.startswith('//'): if_url = "https:" + if_url
+            if any(x in if_url for x in ['vidmoly', 'fembed', 'upstream', 'moly', 'dizipal']):
+                try:
+                    if_res = requests.get(if_url, headers=dp_headers, timeout=5)
+                    if_match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', if_res.text)
+                    if if_match: return redirect(if_match.group(1).replace('\\', ''), code=302)
+                except: continue
+    except: pass
+    return "Dizipal yayını bulunamadı.", 404
+
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V181.6 - Turkuvaz Proxy & Smart Series System Active"
+    return "Aksaçlı Stream API V183.1 - Filmhane (.fit) & Dizipal & Turkuvaz Active"
 
 if __name__ == '__main__':
     app.run(debug=True)
