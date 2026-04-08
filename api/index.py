@@ -11,68 +11,76 @@ HEADERS = {
 }
 
 # -----------------------------------------------------------
-# 1. KÖPRÜ (PROXY) SİSTEMİ - Link var ama oynamıyorsa burası kurtarır
+# 1. KÖPRÜ (PROXY) - Referer engelini aşmak için
 # -----------------------------------------------------------
 @app.route('/proxy')
 def proxy():
     url = request.args.get('url')
-    ref = request.args.get('ref', url) # Referer yoksa kendi URL'sini kullan
+    ref = request.args.get('ref', "https://www.google.com/")
     if not url: return "URL eksik", 400
     
     try:
-        # Siteyi kandıran sahte kimlik
-        proxy_headers = {
-            "User-Agent": HEADERS["User-Agent"],
-            "Referer": ref,
-            "Origin": ref.split('/')[2] if '/' in ref else ""
-        }
-        res = requests.get(url, headers=proxy_headers, timeout=10, verify=False)
-        
-        # İçeriği tarayıcıya/player'a olduğu gibi pasla
-        return Response(res.content, mimetype=res.headers.get('Content-Type'), headers={
-            'Access-Control-Allow-Origin': '*',
-            'Cache-Control': 'no-cache'
-        })
+        p_headers = {"User-Agent": HEADERS["User-Agent"], "Referer": ref}
+        res = requests.get(url, headers=p_headers, timeout=10, stream=True, verify=False)
+        return Response(res.content, mimetype=res.headers.get('Content-Type'), headers={'Access-Control-Allow-Origin': '*'})
     except Exception as e:
         return str(e), 500
 
 # -----------------------------------------------------------
-# 2. YABAN TV ÇEKİCİ (canlitv.diy üzerinden)
+# 2. YABAN TV ÇEKİCİ (canlitv.diy)
 # -----------------------------------------------------------
-def fetch_yaban_diy():
+def fetch_yaban():
+    # Site adresini buradan çekiyoruz
     url = "https://www.canlitv.diy/yaban-tv?kat=belgesel"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
-        # Regex: tırnak içindeki m3u8'i bul
+        # 1. Ham m3u8 ara
         match = re.search(r'["\'](https?://[^\s"\'<>]*?\.m3u8[^\s"\'<>]*?)["\']', res.text)
         if match:
-            raw_link = match.group(1).replace('\\/', '/')
-            # Linki direkt değil, bizim proxy üzerinden gönderelim (Referer koruması için)
-            return f"/proxy?url={raw_link}&ref=https://www.canlitv.diy/"
+            return match.group(1).replace('\\/', '/')
+        
+        # 2. Iframe içinde ara
+        iframe = re.search(r'<iframe.*?src=["\'](.*?)["\']', res.text)
+        if iframe:
+            if_url = iframe.group(1)
+            if if_url.startswith('//'): if_url = "https:" + if_url
+            if_res = requests.get(if_url, headers={"User-Agent": HEADERS["User-Agent"], "Referer": url}, timeout=5)
+            if_match = re.search(r'["\'](https?://[^\s"\'<>]*?\.m3u8[^\s"\'<>]*?)["\']', if_res.text)
+            if if_match: return if_match.group(1).replace('\\/', '/')
     except: pass
     return None
 
 # -----------------------------------------------------------
-# 3. FİLMHANE SİSTEMİ (Domain Güncellendi)
+# 3. FİLMHANE / DİZİ SİSTEMİ (Restore Edildi)
 # -----------------------------------------------------------
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
-    base = "https://filmhane.fit" # Burası patlarsa .net veya .org dene
-    url = f"{base}/dizi/{dizi}/sezon-1/bolum-{bolum}"
+    # Dizi siteleri domain değiştirince burayı güncellemek gerekir
+    base = "https://filmhane.fit" 
     
-    # Özel film tanımları
-    films = {"28-yil-sonra": f"{base}/film/28-yil-sonra-kemik-tapinagi", "war-machine": f"{base}/film/war-machine"}
+    # Sezon/Bölüm ayrıştırma (V186'daki mantık korundu)
+    sezon = "1"
+    b_no = bolum
+    s_match = re.search(r'[sS](\d+)', bolum)
+    if s_match: sezon = s_match.group(1)
+    
+    url = f"{base}/dizi/{dizi}/sezon-{sezon}/bolum-{bolum}"
+    
+    # Film mi dizi mi kontrolü
+    films = {
+        "28-yil-sonra": f"{base}/film/28-yil-sonra-kemik-tapinagi",
+        "war-machine": f"{base}/film/war-machine"
+    }
     if dizi in films: url = films[dizi]
 
     try:
         res = requests.get(url, headers={"User-Agent": HEADERS["User-Agent"], "Referer": base}, timeout=10)
-        # Sayfada m3u8 ara
+        # Sayfadaki ilk m3u8'i çek
         match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', res.text)
         if match:
-            found_link = match.group(1).replace('\\', '')
-            return redirect(found_link) # Dizilerde genelde direkt redirect yeter
+            return redirect(match.group(1).replace('\\', ''), code=302)
     except: pass
-    return "Dizi/Film bulunamadı veya site yapısı değişti.", 404
+    return "Yayın bulunamadı. Site adresi (domain) değişmiş olabilir.", 404
 
 # -----------------------------------------------------------
 # 4. CANLI TV ROUTER
@@ -80,15 +88,14 @@ def stream_dizi(dizi, bolum):
 @app.route('/canli/<kanal>')
 def stream_canli(kanal):
     if kanal == "yabantv":
-        link = fetch_yaban_diy()
+        link = fetch_yaban()
         if link: return redirect(link)
-        return "Yaban TV linki bulunamadı.", 404
-    
-    # DMAX, TLC, NTV
+        return "Yaban TV çekilemedi.", 404
+        
+    # Standart kanallar (NTV, DMAX vb.)
     dogus = {
         "dmax": "https://www.dmax.com.tr/canli-izle",
-        "tlc": "https://www.tlctv.com.tr/canli-izle",
-        "ntv": "https://www.ntv.com.tr/canli-yayin/ntv"
+        "tlc": "https://www.tlctv.com.tr/canli-izle"
     }
     if kanal in dogus:
         try:
@@ -101,4 +108,4 @@ def stream_canli(kanal):
 
 @app.route('/')
 def home():
-    return "Aksaçlı V190.0 - Köprü Sistemi Aktif"
+    return "Aksaçlı Stream API V195.0 - All Systems Restored"
