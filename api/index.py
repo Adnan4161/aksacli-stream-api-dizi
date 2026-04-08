@@ -7,17 +7,45 @@ app = Flask(__name__)
 # --- STABİL HEADERS ---
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://www.dmax.com.tr/",
-    "Origin": "https://www.dmax.com.tr"
+    "Referer": "https://www.yabantv.com/",
+    "Origin": "https://www.yabantv.com"
 }
 
 # -----------------------------------------------------------
-# 1. ÖZEL PROXY SİSTEMLERİ (ATV & AHABER & GOLD)
+# YABAN TV ÖZEL ÇEKİCİ (SCRAPER)
+# -----------------------------------------------------------
+def fetch_yaban():
+    broadcast_url = "https://www.yabantv.com/broadcast"
+    try:
+        # Ana sayfayı çek
+        res = requests.get(broadcast_url, headers=HEADERS, timeout=10)
+        
+        # 1. Sayfa içinde direkt m3u8 ara (hash dahil)
+        match = re.search(r'["\'](https?://[^\s"\'<>]*?\.m3u8[^\s"\'<>]*?)["\']', res.text)
+        if match:
+            return match.group(1).replace('\\/', '/')
+            
+        # 2. Eğer bulamazsa Iframe içinde ara (canlitv.fun vb. için)
+        iframe_match = re.search(r'<iframe.*?src=["\'](.*?)["\']', res.text)
+        if iframe_match:
+            if_url = iframe_match.group(1)
+            if if_url.startswith('//'): if_url = "https:" + if_url
+            
+            if_res = requests.get(if_url, headers=HEADERS, timeout=5)
+            # Iframe içindeki m3u8 linkini yakala
+            if_match = re.search(r'["\'](https?://[^\s"\'<>]*?\.m3u8[^\s"\'<>]*?)["\']', if_res.text)
+            if if_match:
+                return if_match.group(1).replace('\\/', '/')
+    except Exception as e:
+        print(f"Yaban TV Hatası: {e}")
+    return None
+
+# -----------------------------------------------------------
+# 1. ÖZEL PROXY SİSTEMLERİ
 # -----------------------------------------------------------
 
 @app.route('/canli/proxy')
 def proxy_general():
-    """TV Kulesi ve zorlu linkler için header maskeleme köprüsü"""
     target_url = request.args.get('url')
     if not target_url: return "URL eksik", 400
     
@@ -33,32 +61,28 @@ def proxy_general():
     except:
         return redirect(target_url)
 
-@app.route('/canli/gold.m3u8')
-def proxy_gold():
-    url = "https://goldvod.site/live/hpgdisco/123456/266.m3u8"
-    try:
-        res = requests.get(url, headers={"User-Agent": "VLC/3.0.18 LibVLC/3.0.18"}, timeout=10)
-        return Response(res.content, mimetype='application/vnd.apple.mpegurl', headers={'Access-Control-Allow-Origin': '*'})
-    except: return redirect(url)
-
-@app.route('/canli/sup.m3u8')
-def proxy_sup():
-    url = "http://sup-4k.org:80/play/live.php?mac=00:1A:79:56:7A:24&stream=10740&extension=ts"
-    return Response("", status=302, headers={'Location': url, 'Access-Control-Allow-Origin': '*', 'X-Content-Type-Options': 'nosniff'})
-
 # -----------------------------------------------------------
-# 2. STANDART CANLI TV (DMAX, TLC, NTV, ATV, AHABER)
+# 2. CANLI TV ROUTER (YABAN TV EKLENDİ)
 # -----------------------------------------------------------
-def fetch_dogus(url):
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=10)
-        match = re.search(r'["\'](https?:?\\?/\\?/[^\s"\'<>]*?daioncdn[^\s"\'<>]*?\.m3u8[^\s"\'<>]*?)["\']', res.text)
-        if match: return match.group(1).replace('\\/', '/')
-    except: return None
-    return None
-
 @app.route('/canli/<kanal>')
 def stream_canli(kanal):
+    # Doğuş Grubu Scraper Fonksiyonu
+    def fetch_dogus(url):
+        try:
+            res = requests.get(url, headers=HEADERS, timeout=10)
+            match = re.search(r'["\'](https?:?\\?/\\?/[^\s"\'<>]*?daioncdn[^\s"\'<>]*?\.m3u8[^\s"\'<>]*?)["\']', res.text)
+            if match: return match.group(1).replace('\\/', '/')
+        except: return None
+        return None
+
+    # Yaban TV Kontrolü
+    if kanal == "yabantv":
+        link = fetch_yaban()
+        if link:
+            return redirect(link, code=302)
+        return "Yaban TV linki çekilemedi.", 404
+
+    # Diğer Kanallar
     dogus = {
         "dmax": "https://www.dmax.com.tr/canli-izle",
         "tlc": "https://www.tlctv.com.tr/canli-izle",
@@ -72,7 +96,6 @@ def stream_canli(kanal):
     }
 
     if kanal in dogus:
-        HEADERS["Referer"] = dogus[kanal].replace("canli-izle", "")
         link = fetch_dogus(dogus[kanal])
         if link: return redirect(link, code=302)
         
@@ -82,18 +105,15 @@ def stream_canli(kanal):
     return "Kanal bulunamadı.", 404
 
 # -----------------------------------------------------------
-# 3. FİLMHANE SİSTEMİ (DOMAIN: .FIT)
+# 3. FİLMHANE SİSTEMİ
 # -----------------------------------------------------------
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
     base_domain = "https://filmhane.fit" 
-    
     sezon_no = "1"
     bolum_no = bolum
-
     s_match = re.search(r'[sS](\d+)', bolum)
     b_match = re.search(r'[bB](\d+)', bolum)
-
     if s_match and b_match:
         sezon_no = s_match.group(1)
         bolum_no = b_match.group(1)
@@ -101,26 +121,20 @@ def stream_dizi(dizi, bolum):
         bolum_no = b_match.group(1)
 
     url = f"{base_domain}/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
-    
-    # Özel film/kısa link tanımlamaları
     films = {
         "28-yil-sonra": f"{base_domain}/film/28-yil-sonra-kemik-tapinagi",
         "war-machine": f"{base_domain}/film/war-machine",
         "banlieusards-3": f"{base_domain}/film/banlieusards-3",
         "zeta": f"{base_domain}/film/zeta",
     }
-    
     if dizi in films: url = films[dizi]
     
     try:
         fh_headers = {"User-Agent": HEADERS["User-Agent"], "Referer": f"{base_domain}/"}
         res = requests.get(url, headers=fh_headers, timeout=10)
-        
-        # Sayfada direkt m3u8 ara
         match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', res.text)
         if match: return redirect(match.group(1).replace('\\', ''), code=302)
         
-        # Iframe'ler içinde m3u8 ara
         iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
         for if_url in iframes:
             if if_url.startswith('//'): if_url = "https:" + if_url
@@ -132,12 +146,9 @@ def stream_dizi(dizi, bolum):
     except: pass
     return "Yayın bulunamadı.", 404
 
-# -----------------------------------------------------------
-# ANA SAYFA
-# -----------------------------------------------------------
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V186.0 - Filmhane & Canlı TV Active (Ultra Clean)"
+    return "Aksaçlı Stream API V187.0 - Yaban TV & Filmhane Active"
 
 if __name__ == '__main__':
     app.run(debug=True)
