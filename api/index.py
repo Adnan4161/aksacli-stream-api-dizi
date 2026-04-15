@@ -1,6 +1,7 @@
 from flask import Flask, redirect, Response, request
 import requests
 import re
+from urllib.parse import urlparse # YENİ EKLENDİ: Dinamik domain (fit, ink vs) tespiti için
 
 app = Flask(__name__)
 
@@ -82,7 +83,55 @@ def stream_canli(kanal):
     return "Kanal bulunamadı.", 404
 
 # -----------------------------------------------------------
-# 3. FİLMHANE SİSTEMİ (DOMAIN: .FIT)
+# 3. YENİ: EVRENSEL ÇÖZÜCÜ (Tüm Filmhane Linkleri İçin)
+# -----------------------------------------------------------
+@app.route('/api')
+def resolve_universal():
+    """Gelen herhangi bir Filmhane URL'sinden m3u8 linkini ayıklar ve yönlendirir"""
+    target_url = request.args.get('url')
+    if not target_url: 
+        return "URL eksik. Kullanım: /api?url=...", 400
+
+    # Dinamik Domain Tespiti (.fit, .ink, .net vs)
+    parsed_uri = urlparse(target_url)
+    domain = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
+    
+    custom_headers = {
+        "User-Agent": HEADERS["User-Agent"],
+        "Referer": domain + "/",
+        "Origin": domain
+    }
+
+    try:
+        res = requests.get(target_url, headers=custom_headers, timeout=10)
+        res.encoding = 'utf-8'
+        
+        # 1. İhtimal: Sayfada direkt m3u8 varsa
+        m3u8_match = re.search(r'["\'](https?://[^\s"\'<>]*?\.m3u8[^\s"\'<>]*)["\']', res.text)
+        if m3u8_match:
+            return redirect(m3u8_match.group(1).replace('\\', ''), code=302)
+
+        # 2. İhtimal: Player bir iframe içindeyse
+        iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
+        for if_url in iframes:
+            if if_url.startswith('//'): if_url = "https:" + if_url
+            if not if_url.startswith('http'): continue
+            
+            try:
+                if_res = requests.get(if_url, headers=custom_headers, timeout=5)
+                if_match = re.search(r'["\'](https?://[^\s"\'<>]*?\.m3u8[^\s"\'<>]*)["\']', if_res.text)
+                if if_match:
+                    return redirect(if_match.group(1).replace('\\', ''), code=302)
+            except: 
+                continue
+
+    except Exception:
+        pass
+
+    return "Video kaynağı bulunamadı.", 404
+
+# -----------------------------------------------------------
+# 4. ESKİ FİLMHANE SİSTEMİ (DOMAIN: .FIT) - (Bozulmaması için korundu)
 # -----------------------------------------------------------
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
@@ -138,7 +187,7 @@ def stream_dizi(dizi, bolum):
 # -----------------------------------------------------------
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V186.0 - Filmhane & Canlı TV Active (Ultra Clean)"
+    return "Aksaçlı Stream API V162.6 - Filmhane & Canlı TV Active (Ultra Clean + Universal)"
 
 if __name__ == '__main__':
     app.run(debug=True)
