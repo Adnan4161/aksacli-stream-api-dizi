@@ -158,6 +158,7 @@ def stream_dizi(dizi, bolum):
         "banlieusards-3": f"{base_domain}/film/banlieusards-3",
         "zeta": f"{base_domain}/film/zeta",
         "crime-101": f"{base_domain}/film/crime-101",
+        "kagittan-hayatlar": f"{base_domain}/film/kagittan-hayatlar",
     }
     
     if dizi in films: url = films[dizi]
