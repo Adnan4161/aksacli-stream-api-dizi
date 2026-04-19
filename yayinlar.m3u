@@ -162,7 +162,7 @@ https://aksacli-stream-api-dizi.vercel.app/yayin/the-madison/S1B6
 
 
 #EXTINF:-1 tvg-logo="https://cms-tabii-public-image.tabii.com/int/webp/w1200/h630/q70/62093.jpeg" group-title="Yankı: İkinci Perde",Yankı: İkinci Perde 1. Bölüm
-https://aksacli-stream-api-dizi.vercel.app/yayin/yanki-gorunmez-el/S2B2
+https://aksacli-stream-api-dizi.vercel.app/yayin/yanki-gorunmez-el/S2B1
 #EXTINF:-1 tvg-logo="https://cms-tabii-public-image.tabii.com/int/webp/w1200/h630/q70/62093.jpeg" group-title="Yankı: İkinci Perde",Yankı: İkinci Perde 2. Bölüm
 https://aksacli-stream-api-dizi.vercel.app/yayin/yanki-gorunmez-el/S2B2
 #EXTINF:-1 tvg-logo="https://cms-tabii-public-image.tabii.com/int/webp/w1200/h630/q70/62093.jpeg" group-title="Yankı: İkinci Perde",Yankı: İkinci Perde 3. Bölüm
@@ -187,3 +187,7 @@ https://aksacli-stream-api-dizi.vercel.app/yayin/yanki-gorunmez-el/S2B11
 https://aksacli-stream-api-dizi.vercel.app/yayin/yanki-gorunmez-el/S2B12
 #EXTINF:-1 tvg-logo="https://cms-tabii-public-image.tabii.com/int/webp/w1200/h630/q70/62093.jpeg" group-title="Yankı: İkinci Perde",Yankı: İkinci Perde 13. Bölüm
 https://aksacli-stream-api-dizi.vercel.app/yayin/yanki-gorunmez-el/S2B13
+
+
+#EXTINF:-1 tvg-logo="https://filmhane.fit/uploads/series/original/kara-kis-8892.webp" group-title="Kara Kış",Kara Kış 1. Bölüm
+https://aksacli-stream-api-dizi.vercel.app/yayin/kara-kis/S1B1
