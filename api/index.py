@@ -5,11 +5,20 @@ from urllib.parse import urlparse, urljoin, urlencode
 
 app = Flask(__name__)
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Referer": "https://www.dmax.com.tr/",
+    "Origin": "https://www.dmax.com.tr",
+}
 
 
 # -----------------------------------------------------------
-# GENEL YARDIMCILAR
+# Helpers
 # -----------------------------------------------------------
 
 def _origin(url: str) -> str:
@@ -103,7 +112,7 @@ def _rewrite_m3u8(playlist_text: str, base_url: str, referer: str):
             continue
 
         if line.startswith("#"):
-            # #EXT-X-KEY, #EXT-X-I-FRAME-STREAM-INF gibi URI içeren satırlar
+            # URI="..." içeren satırlar (KEY, I-FRAME vs)
             def repl(m):
                 u = m.group(1).strip()
                 abs_u = urljoin(base_url, u)
@@ -113,7 +122,6 @@ def _rewrite_m3u8(playlist_text: str, base_url: str, referer: str):
             out.append(rewritten)
             continue
 
-        # normal segment / alt playlist satırı
         abs_url = urljoin(base_url, line)
         out.append(_build_proxy_url(abs_url, referer))
 
@@ -121,7 +129,7 @@ def _rewrite_m3u8(playlist_text: str, base_url: str, referer: str):
 
 
 # -----------------------------------------------------------
-# PLAYERJS / IFRAME ÇÖZÜCÜ
+# PlayerJS / iframe resolver
 # -----------------------------------------------------------
 
 def _resolve_playerjs_embed(embed_url: str, page_url: str, session: requests.Session):
@@ -137,13 +145,17 @@ def _resolve_playerjs_embed(embed_url: str, page_url: str, session: requests.Ses
     embed_res = session.get(embed_url, headers=embed_headers, timeout=12)
     embed_html = embed_res.text
 
-    # embed içinde direkt m3u8 varsa
+    # Embed içinde direkt m3u8 varsa
     direct = _extract_m3u8_from_text(embed_html)
     if direct:
         return direct, embed_origin + "/"
 
     # fetch('/dl?op=get_stream&...')
-    fetch_match = re.search(r"fetch\(['\"]([^'\"]*op=get_stream[^'\"]*)['\"]\)", embed_html, re.IGNORECASE)
+    fetch_match = re.search(
+        r"fetch\(\s*['\"]([^'\"]*op=get_stream[^'\"]*)['\"]\s*\)",
+        embed_html,
+        re.IGNORECASE
+    )
     if not fetch_match:
         return None
 
@@ -162,17 +174,16 @@ def _resolve_playerjs_embed(embed_url: str, page_url: str, session: requests.Ses
         "Accept": "application/json, text/plain, */*"
     }
 
-    dl_res = session.get(dl_url, headers=dl_headers, cookies=cookies or None, timeout=12)
-    dl_text = dl_res.text
+    dl_res = session.get(dl_url, headers=dl_headers, cookies=(cookies or None), timeout=12)
 
     try:
-        j = dl_res.json()
-        if isinstance(j, dict) and j.get("url"):
-            return _clean_url(j["url"]), embed_origin + "/"
+        data = dl_res.json()
+        if isinstance(data, dict) and data.get("url"):
+            return _clean_url(data["url"]), embed_origin + "/"
     except Exception:
         pass
 
-    fallback = _extract_m3u8_from_text(dl_text)
+    fallback = _extract_m3u8_from_text(dl_res.text)
     if fallback:
         return fallback, embed_origin + "/"
 
@@ -202,7 +213,7 @@ def _resolve_stream_from_page(page_url: str, page_headers: dict):
         if not _is_http_url(if_url):
             continue
 
-        # iframe içinden direkt m3u8
+        # iframe içinde direkt m3u8
         try:
             if_headers = {
                 "User-Agent": USER_AGENT,
@@ -216,7 +227,7 @@ def _resolve_stream_from_page(page_url: str, page_headers: dict):
         except Exception:
             pass
 
-        # PlayerJS fetch akışı
+        # PlayerJS fetch çözümü
         try:
             solved = _resolve_playerjs_embed(if_url, page_url, session)
             if solved:
@@ -228,7 +239,7 @@ def _resolve_stream_from_page(page_url: str, page_headers: dict):
 
 
 # -----------------------------------------------------------
-# HLS PROXY (Referer/Origin zorunlu kaynaklar için)
+# HLS Proxy (referer/origin korumalı kaynaklar için)
 # -----------------------------------------------------------
 
 @app.route("/hls/proxy")
@@ -254,13 +265,13 @@ def hls_proxy():
         return "Proxy upstream hatası", 502
 
     ctype = up.headers.get("Content-Type", "")
+    text_head = up.text[:120] if up.text else ""
 
-    # playlist ise rewrite et
     is_playlist = (
         ".m3u8" in (up.url or "").lower()
         or "application/vnd.apple.mpegurl" in ctype.lower()
         or "application/x-mpegurl" in ctype.lower()
-        or "#EXTM3U" in (up.text[:120] if up.text else "")
+        or "#EXTM3U" in text_head
     )
 
     if is_playlist:
@@ -270,7 +281,6 @@ def hls_proxy():
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
-    # segment / key / binary
     resp = Response(up.content, status=up.status_code)
     if ctype:
         resp.headers["Content-Type"] = ctype
@@ -280,7 +290,7 @@ def hls_proxy():
 
 
 # -----------------------------------------------------------
-# 1. ÖZEL PROXY SİSTEMLERİ (ATV & AHABER & GOLD)
+# 1) Özel canlı proxy
 # -----------------------------------------------------------
 
 @app.route('/canli/proxy')
@@ -335,7 +345,7 @@ def proxy_sup():
 
 
 # -----------------------------------------------------------
-# 2. STANDART CANLI TV
+# 2) Standart canlı TV
 # -----------------------------------------------------------
 
 def fetch_dogus(url, headers):
@@ -368,12 +378,12 @@ def stream_canli(kanal):
 
     if kanal in dogus:
         ref = dogus[kanal]
-        headers = {
+        local_headers = {
             "User-Agent": USER_AGENT,
             "Referer": ref,
             "Origin": _origin(ref)
         }
-        link = fetch_dogus(dogus[kanal], headers)
+        link = fetch_dogus(dogus[kanal], local_headers)
         if link:
             return _redirect_no_cache(link)
 
@@ -384,18 +394,17 @@ def stream_canli(kanal):
 
 
 # -----------------------------------------------------------
-# 3. EVRENSEL ÇÖZÜCÜ
+# 3) Evrensel çözücü
 # -----------------------------------------------------------
 
 @app.route('/api')
 def resolve_universal():
-    target_url = request.args.get('url')
+    target_url = (request.args.get('url') or "").strip()
     if not target_url:
         return "URL eksik. Kullanım: /api?url=...", 400
 
-    target_url = target_url.strip()
-
     if re.search(r'\.m3u8($|[?&])', target_url, re.IGNORECASE):
+        # Direkt m3u8 ise proxy üzerinden ver
         return _redirect_no_cache(_build_proxy_url(target_url, _origin(target_url) + "/"))
 
     domain = _origin(target_url)
@@ -417,7 +426,7 @@ def resolve_universal():
 
 
 # -----------------------------------------------------------
-# 4. DİZİ / FİLM
+# 4) Dizi / Film route
 # -----------------------------------------------------------
 
 @app.route('/yayin/<dizi>/<bolum>')
@@ -425,8 +434,10 @@ def stream_dizi(dizi, bolum):
     base_domain = "https://filmhane.fit"
 
     sezon_no, bolum_no = _parse_episode(bolum)
-    url = f"{base_domain}/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
+    dizi_url = f"{base_domain}/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
+    film_url = f"{base_domain}/film/{dizi}"
 
+    # Eski özel film eşleştirmeleri
     films = {
         "28-yil-sonra": f"{base_domain}/film/28-yil-sonra-kemik-tapinagi",
         "war-machine": f"{base_domain}/film/war-machine",
@@ -437,8 +448,21 @@ def stream_dizi(dizi, bolum):
         "the-wrecking-crew": f"{base_domain}/film/the-wrecking-crew",
     }
 
+    candidates = []
     if dizi in films:
-        url = films[dizi]
+        candidates.append(films[dizi])
+        candidates.append(dizi_url)  # fallback
+    else:
+        candidates.append(dizi_url)
+        candidates.append(film_url)  # kritik fallback
+
+    # duplicate temizliği
+    seen = set()
+    ordered_candidates = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            ordered_candidates.append(c)
 
     fh_headers = {
         "User-Agent": USER_AGENT,
@@ -446,24 +470,25 @@ def stream_dizi(dizi, bolum):
         "Origin": base_domain
     }
 
-    try:
-        solved = _resolve_stream_from_page(url, fh_headers)
-        if solved:
-            stream_url, ref = solved
-            return _redirect_no_cache(_build_proxy_url(stream_url, ref))
-    except Exception as e:
-        print(f"[stream_dizi] {url} -> {e}", flush=True)
+    for candidate in ordered_candidates:
+        try:
+            solved = _resolve_stream_from_page(candidate, fh_headers)
+            if solved:
+                stream_url, ref = solved
+                return _redirect_no_cache(_build_proxy_url(stream_url, ref))
+        except Exception as e:
+            print(f"[stream_dizi] fail {candidate} -> {e}", flush=True)
 
     return "Yayın bulunamadı.", 404
 
 
 # -----------------------------------------------------------
-# ANA SAYFA
+# Ana sayfa
 # -----------------------------------------------------------
 
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V162.9 - HLS proxy + PlayerJS resolver active"
+    return "Aksaçlı Stream API V163.0 - Film fallback + HLS proxy active"
 
 
 if __name__ == '__main__':
