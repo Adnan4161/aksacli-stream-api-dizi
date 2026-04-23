@@ -126,7 +126,7 @@ https://aksacli-stream-api-dizi.vercel.app/yayin/imam-gaz-l-huccetu-l-isl-m/S1B1
 
 
 #EXTINF:-1 tvg-logo="https://filmhane.fit/uploads/series/original/kara-kis-8892.webp" group-title="Kara Kış",Kara Kış 1. Bölüm
-https://aksacli-stream-api-dizi.vercel.app/yayin/kara-kis/S1B1
+https://aksacli-stream-api-dizi.vercel.app/api?url=https://filmhane.fit/dizi/kara-kis/sezon-1/bolum-1
 #EXTINF:-1 tvg-logo="https://filmhane.fit/uploads/series/original/kara-kis-8892.webp" group-title="Kara Kış",Kara Kış 2. Bölüm
 https://aksacli-stream-api-dizi.vercel.app/yayin/kara-kis/S1B2
 #EXTINF:-1 tvg-logo="https://filmhane.fit/uploads/series/original/kara-kis-8892.webp" group-title="Kara Kış",Kara Kış 3. Bölüm
