@@ -1,496 +1,416 @@
-from flask import Flask, redirect, Response, request
-import requests
+from flask import Flask, Response, request
+import os
 import re
-from urllib.parse import urlparse, urljoin, urlencode
+import time
+from threading import Lock
+from urllib.parse import urlparse, urljoin
+
+import requests
+from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
-
-HEADERS = {
-    "User-Agent": USER_AGENT,
+# -----------------------------
+# Config
+# -----------------------------
+BASE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
     "Referer": "https://www.dmax.com.tr/",
     "Origin": "https://www.dmax.com.tr",
 }
 
+API_KEY = os.getenv("API_KEY", "").strip()
+FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.fit").rstrip("/")
 
-# -----------------------------------------------------------
+_ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
+PROXY_ALLOWED_HOSTS = {
+    h.strip().lower()
+    for h in _ALLOWED_PROXY_HOSTS_RAW.split(",")
+    if h.strip()
+}
+
+DEFAULT_TIMEOUT = 10
+SHORT_TTL = 20
+NORMAL_TTL = 45
+
+# -----------------------------
+# HTTP session (light retry)
+# -----------------------------
+SESSION = requests.Session()
+_retry = Retry(
+    total=2,
+    connect=2,
+    read=2,
+    status=2,
+    backoff_factor=0.2,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=frozenset(["GET", "HEAD"]),
+    raise_on_status=False,
+)
+_adapter = HTTPAdapter(max_retries=_retry, pool_connections=30, pool_maxsize=30)
+SESSION.mount("http://", _adapter)
+SESSION.mount("https://", _adapter)
+
+# -----------------------------
+# In-memory cache
+# -----------------------------
+_CACHE = {}
+_CACHE_LOCK = Lock()
+_CACHE_MAX = 4000
+
+def cache_get(key: str):
+    now = time.time()
+    with _CACHE_LOCK:
+        item = _CACHE.get(key)
+        if not item:
+            return None
+        if item["exp"] <= now:
+            _CACHE.pop(key, None)
+            return None
+        return item["val"]
+
+def cache_set(key: str, value: str, ttl_sec: int):
+    if not value:
+        return
+    now = time.time()
+    with _CACHE_LOCK:
+        _CACHE[key] = {"val": value, "exp": now + max(1, ttl_sec)}
+        if len(_CACHE) > _CACHE_MAX:
+            # Drop expired first
+            expired = [k for k, v in _CACHE.items() if v["exp"] <= now]
+            for k in expired:
+                _CACHE.pop(k, None)
+            # Still big: trim oldest by exp
+            if len(_CACHE) > _CACHE_MAX:
+                for k, _ in sorted(_CACHE.items(), key=lambda kv: kv[1]["exp"])[: len(_CACHE) // 3]:
+                    _CACHE.pop(k, None)
+
+# -----------------------------
 # Helpers
-# -----------------------------------------------------------
+# -----------------------------
+RE_M3U8 = re.compile(r"""["'](https?://[^"'<>\s]+\.m3u8[^"'<>\s]*)["']""", re.IGNORECASE)
+RE_ALT = re.compile(r"""(?:file|src)\s*:\s*["'](https?://[^"'<>\s]+\.m3u8[^"'<>\s]*)["']""", re.IGNORECASE)
+RE_DAION = re.compile(r"""["'](https?:?\\?/\\?/[^\s"'<>]*?daioncdn[^\s"'<>]*?\.m3u8[^\s"'<>]*?)["']""", re.IGNORECASE)
 
-def _origin(url: str) -> str:
+def auth_guard():
+    if API_KEY and request.args.get("k", "") != API_KEY:
+        return Response("Unauthorized", status=401)
+    return None
+
+def origin_of(url: str) -> str:
     p = urlparse(url)
     if not p.scheme or not p.netloc:
         return ""
     return f"{p.scheme}://{p.netloc}"
 
+def is_http_url(value: str) -> bool:
+    try:
+        p = urlparse(value.strip())
+        return p.scheme in ("http", "https") and bool(p.netloc)
+    except Exception:
+        return False
 
-def _is_http_url(u: str) -> bool:
-    return isinstance(u, str) and (u.startswith("http://") or u.startswith("https://"))
-
-
-def _clean_url(raw: str):
+def normalize_url(raw: str, base_url: str = "") -> str:
     if not raw:
-        return None
-    return raw.replace("\\/", "/").replace("\\\\", "").strip().strip('"').strip("'")
-
-
-def _redirect_no_cache(url: str):
-    r = redirect(url, code=302)
-    r.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    r.headers["Pragma"] = "no-cache"
-    return r
-
-
-def _extract_m3u8_from_text(text: str):
-    if not text:
-        return None
-
-    patterns = [
-        r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']',
-        r'(?:file|src)\s*[:=]\s*["\'](https?://[^"\']+\.m3u8[^"\']*)["\']',
-        r'"url"\s*:\s*"([^"]+\.m3u8[^"]*)"'
-    ]
-
-    for p in patterns:
-        m = re.search(p, text, re.IGNORECASE)
-        if m:
-            return _clean_url(m.group(1))
-
-    m = re.search(r'https?://[^"\'\s]+\.m3u8[^"\'\s]*', text, re.IGNORECASE)
-    if m:
-        return _clean_url(m.group(0))
-
-    return None
-
-
-def _extract_cookie_value(html: str, key: str):
-    m = re.search(rf"\.cookie\('{re.escape(key)}',\s*'([^']+)'", html, re.IGNORECASE)
-    return m.group(1) if m else None
-
-
-def _parse_episode(bolum: str):
-    token = (bolum or "").strip()
-
-    # /yayin/asylum/1 -> S1B1 gibi davran
-    if token.isdigit():
-        return 1, int(token)
-
-    s_match = re.search(r"[sS](\d+)", token)
-    b_match = re.search(r"[bB](\d+)", token)
-
-    if s_match and b_match:
-        return int(s_match.group(1)), int(b_match.group(1))
-    if b_match:
-        return 1, int(b_match.group(1))
-
-    num = re.search(r"(\d+)", token)
-    if num:
-        return 1, int(num.group(1))
-
-    return 1, 1
-
-
-def _build_proxy_url(stream_url: str, referer: str):
-    if not referer or not _is_http_url(referer):
-        referer = _origin(stream_url) + "/"
-    qs = urlencode({"u": stream_url, "r": referer})
-    return f"/hls/proxy?{qs}"
-
-
-def _rewrite_m3u8(playlist_text: str, base_url: str, referer: str):
-    out = []
-
-    for raw_line in playlist_text.splitlines():
-        line = raw_line.strip()
-
-        if not line:
-            out.append(raw_line)
-            continue
-
-        if line.startswith("#"):
-            # URI="..." içeren satırlar (KEY, I-FRAME vs)
-            def repl(m):
-                u = m.group(1).strip()
-                abs_u = urljoin(base_url, u)
-                return f'URI="{_build_proxy_url(abs_u, referer)}"'
-
-            rewritten = re.sub(r'URI="([^"]+)"', repl, raw_line)
-            out.append(rewritten)
-            continue
-
-        abs_url = urljoin(base_url, line)
-        out.append(_build_proxy_url(abs_url, referer))
-
-    return "\n".join(out) + "\n"
-
-
-# -----------------------------------------------------------
-# PlayerJS / iframe resolver
-# -----------------------------------------------------------
-
-def _resolve_playerjs_embed(embed_url: str, page_url: str, session: requests.Session):
-    page_origin = _origin(page_url)
-    embed_origin = _origin(embed_url)
-
-    embed_headers = {
-        "User-Agent": USER_AGENT,
-        "Referer": page_url,
-        "Origin": page_origin
-    }
-
-    embed_res = session.get(embed_url, headers=embed_headers, timeout=12)
-    embed_html = embed_res.text
-
-    # Embed içinde direkt m3u8 varsa
-    direct = _extract_m3u8_from_text(embed_html)
-    if direct:
-        return direct, embed_origin + "/"
-
-    # fetch('/dl?op=get_stream&...')
-    fetch_match = re.search(
-        r"fetch\(\s*['\"]([^'\"]*op=get_stream[^'\"]*)['\"]\s*\)",
-        embed_html,
-        re.IGNORECASE
-    )
-    if not fetch_match:
-        return None
-
-    dl_url = urljoin(embed_url, fetch_match.group(1))
-
-    cookies = {}
-    for k in ("file_id", "aff", "ref_url"):
-        v = _extract_cookie_value(embed_html, k)
-        if v:
-            cookies[k] = v
-
-    dl_headers = {
-        "User-Agent": USER_AGENT,
-        "Referer": embed_url,
-        "Origin": embed_origin,
-        "Accept": "application/json, text/plain, */*"
-    }
-
-    dl_res = session.get(dl_url, headers=dl_headers, cookies=(cookies or None), timeout=12)
-
-    try:
-        data = dl_res.json()
-        if isinstance(data, dict) and data.get("url"):
-            return _clean_url(data["url"]), embed_origin + "/"
-    except Exception:
-        pass
-
-    fallback = _extract_m3u8_from_text(dl_res.text)
-    if fallback:
-        return fallback, embed_origin + "/"
-
-    return None
-
-
-def _resolve_stream_from_page(page_url: str, page_headers: dict):
-    session = requests.Session()
-    res = session.get(page_url, headers=page_headers, timeout=15)
-    html = res.text
-
-    # 1) Direkt m3u8
-    direct = _extract_m3u8_from_text(html)
-    if direct:
-        return direct, _origin(page_url) + "/"
-
-    # 2) iframe tara
-    iframes = re.findall(r'<iframe[^>]+(?:src|data-src)=["\']([^"\']+)["\']', html, re.IGNORECASE)
-
-    for raw_iframe in iframes[:10]:
-        if_url = raw_iframe.strip()
-        if if_url.startswith("//"):
-            if_url = "https:" + if_url
-        elif not if_url.startswith("http"):
-            if_url = urljoin(page_url, if_url)
-
-        if not _is_http_url(if_url):
-            continue
-
-        # iframe içinde direkt m3u8
-        try:
-            if_headers = {
-                "User-Agent": USER_AGENT,
-                "Referer": page_url,
-                "Origin": _origin(page_url)
-            }
-            if_res = session.get(if_url, headers=if_headers, timeout=12)
-            in_iframe = _extract_m3u8_from_text(if_res.text)
-            if in_iframe:
-                return in_iframe, _origin(if_url) + "/"
-        except Exception:
-            pass
-
-        # PlayerJS fetch çözümü
-        try:
-            solved = _resolve_playerjs_embed(if_url, page_url, session)
-            if solved:
-                return solved
-        except Exception:
-            continue
-
-    return None
-
-
-# -----------------------------------------------------------
-# HLS Proxy (referer/origin korumalı kaynaklar için)
-# -----------------------------------------------------------
-
-@app.route("/hls/proxy")
-def hls_proxy():
-    target = (request.args.get("u") or "").strip()
-    referer = (request.args.get("r") or "").strip()
-
-    if not _is_http_url(target):
-        return "Geçersiz URL", 400
-
-    if not _is_http_url(referer):
-        referer = _origin(target) + "/"
-
-    req_headers = {
-        "User-Agent": USER_AGENT,
-        "Referer": referer,
-        "Origin": _origin(referer) or _origin(target)
-    }
-
-    try:
-        up = requests.get(target, headers=req_headers, timeout=20, allow_redirects=True)
-    except Exception:
-        return "Proxy upstream hatası", 502
-
-    ctype = up.headers.get("Content-Type", "")
-    text_head = up.text[:120] if up.text else ""
-
-    is_playlist = (
-        ".m3u8" in (up.url or "").lower()
-        or "application/vnd.apple.mpegurl" in ctype.lower()
-        or "application/x-mpegurl" in ctype.lower()
-        or "#EXTM3U" in text_head
-    )
-
-    if is_playlist:
-        rewritten = _rewrite_m3u8(up.text, up.url, referer)
-        resp = Response(rewritten, status=200, mimetype="application/vnd.apple.mpegurl")
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Cache-Control"] = "no-store"
-        return resp
-
-    resp = Response(up.content, status=up.status_code)
-    if ctype:
-        resp.headers["Content-Type"] = ctype
-    resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Cache-Control"] = "no-store"
-    return resp
-
-
-# -----------------------------------------------------------
-# 1) Özel canlı proxy
-# -----------------------------------------------------------
-
-@app.route('/canli/proxy')
-def proxy_general():
-    target_url = request.args.get('url')
-    if not target_url:
-        return "URL eksik", 400
-
-    custom_headers = {
-        "User-Agent": USER_AGENT,
-        "Referer": "https://amp.tvkulesi.com/",
-        "Origin": "https://amp.tvkulesi.com"
-    }
-
-    try:
-        res = requests.get(target_url, headers=custom_headers, timeout=10)
-        return Response(
-            res.content,
-            mimetype='application/vnd.apple.mpegurl',
-            headers={'Access-Control-Allow-Origin': '*'}
-        )
-    except Exception:
-        return redirect(target_url)
-
-
-@app.route('/canli/gold.m3u8')
-def proxy_gold():
-    url = "https://goldvod.site/live/hpgdisco/123456/266.m3u8"
-    try:
-        res = requests.get(url, headers={"User-Agent": "VLC/3.0.18 LibVLC/3.0.18"}, timeout=10)
-        return Response(
-            res.content,
-            mimetype='application/vnd.apple.mpegurl',
-            headers={'Access-Control-Allow-Origin': '*'}
-        )
-    except Exception:
-        return redirect(url)
-
-
-@app.route('/canli/sup.m3u8')
-def proxy_sup():
-    url = "http://sup-4k.org:80/play/live.php?mac=00:1A:79:56:7A:24&stream=10740&extension=ts"
+        return ""
+    s = raw.strip()
+    s = s.replace("\\/", "/").replace("\\u0026", "&").replace("&amp;", "&").replace("\\", "")
+    if s.startswith("//"):
+        s = "https:" + s
+    if base_url and s.startswith("/"):
+        s = urljoin(base_url, s)
+    return s.strip()
+
+def is_proxy_host_allowed(target_url: str) -> bool:
+    if not PROXY_ALLOWED_HOSTS:
+        return True
+    host = (urlparse(target_url).hostname or "").lower()
+    if not host:
+        return False
+    return any(host == allowed or host.endswith("." + allowed) for allowed in PROXY_ALLOWED_HOSTS)
+
+def redirect_light(target_url: str, ttl: int = SHORT_TTL) -> Response:
     return Response(
         "",
         status=302,
         headers={
-            'Location': url,
-            'Access-Control-Allow-Origin': '*',
-            'X-Content-Type-Options': 'nosniff'
-        }
+            "Location": target_url,
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": f"public, max-age=0, s-maxage={max(1, ttl)}, stale-while-revalidate=120",
+        },
     )
 
-
-# -----------------------------------------------------------
-# 2) Standart canlı TV
-# -----------------------------------------------------------
-
-def fetch_dogus(url, headers):
+def fetch_text(url: str, headers: dict, timeout_sec: int = DEFAULT_TIMEOUT) -> str:
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        match = re.search(
-            r'["\'](https?:?\\?/\\?/[^\s"\'<>]*?daioncdn[^\s"\'<>]*?\.m3u8[^\s"\'<>]*?)["\']',
-            res.text
-        )
-        if match:
-            return match.group(1).replace('\\/', '/')
+        r = SESSION.get(url, headers=headers, timeout=timeout_sec, allow_redirects=True)
+        if r.status_code >= 400:
+            return ""
+        r.encoding = r.encoding or "utf-8"
+        return r.text or ""
     except Exception:
-        return None
-    return None
+        return ""
 
+def first_m3u8_from_text(text: str, base_url: str = "") -> str:
+    if not text:
+        return ""
 
-@app.route('/canli/<kanal>')
-def stream_canli(kanal):
+    m = RE_M3U8.search(text)
+    if m:
+        u = normalize_url(m.group(1), base_url)
+        if is_http_url(u):
+            return u
+
+    m = RE_ALT.search(text)
+    if m:
+        u = normalize_url(m.group(1), base_url)
+        if is_http_url(u):
+            return u
+
+    return ""
+
+def resolve_from_page(page_url: str, headers: dict, max_iframes: int = 5) -> str:
+    html = fetch_text(page_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not html:
+        return ""
+
+    found = first_m3u8_from_text(html, base_url=page_url)
+    if found:
+        return found
+
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        iframe_urls = []
+        for iframe in soup.find_all("iframe"):
+            src = iframe.get("src") or iframe.get("data-src") or ""
+            src = normalize_url(src, base_url=page_url)
+            if is_http_url(src):
+                iframe_urls.append(src)
+
+        # de-dup
+        seen = set()
+        unique_iframes = []
+        for u in iframe_urls:
+            if u in seen:
+                continue
+            seen.add(u)
+            unique_iframes.append(u)
+
+        for iframe_url in unique_iframes[:max_iframes]:
+            iframe_origin = origin_of(iframe_url)
+            iframe_headers = {
+                "User-Agent": BASE_HEADERS["User-Agent"],
+                "Referer": (iframe_origin + "/") if iframe_origin else BASE_HEADERS["Referer"],
+                "Origin": iframe_origin if iframe_origin else BASE_HEADERS["Origin"],
+            }
+            iframe_html = fetch_text(iframe_url, headers=iframe_headers, timeout_sec=6)
+            found = first_m3u8_from_text(iframe_html, base_url=iframe_url)
+            if found:
+                return found
+    except Exception:
+        pass
+
+    return ""
+
+def parse_episode_token(raw_bolum: str):
+    raw = (raw_bolum or "").strip()
+
+    s_match = re.search(r"[sS](\d+)", raw)
+    b_match = re.search(r"[bB](\d+)", raw)
+
+    if s_match and b_match:
+        return s_match.group(1), b_match.group(1)
+
+    if raw.isdigit():
+        return "1", raw
+
+    if b_match:
+        return "1", b_match.group(1)
+
+    return "1", raw
+
+def fetch_dogus_stream(landing_url: str) -> str:
+    page_origin = origin_of(landing_url)
+    headers = {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+        "Referer": (page_origin + "/") if page_origin else BASE_HEADERS["Referer"],
+        "Origin": page_origin if page_origin else BASE_HEADERS["Origin"],
+    }
+
+    html = fetch_text(landing_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not html:
+        return ""
+
+    m = RE_DAION.search(html)
+    if m:
+        u = normalize_url(m.group(1), base_url=landing_url)
+        if is_http_url(u):
+            return u
+
+    return resolve_from_page(landing_url, headers=headers, max_iframes=3)
+
+# -----------------------------
+# Routes
+# -----------------------------
+@app.route("/", methods=["GET", "HEAD"])
+def home():
+    return "Aksacli Stream API V170 - redirect-only mode (quota-safe)"
+
+@app.route("/health", methods=["GET", "HEAD"])
+def health():
+    return {"ok": True, "cache_items": len(_CACHE), "mode": "redirect-only"}
+
+@app.route("/canli/proxy", methods=["GET", "HEAD"])
+def proxy_general():
+    g = auth_guard()
+    if g:
+        return g
+
+    target_url = (request.args.get("url") or "").strip()
+    if not target_url:
+        return "URL eksik", 400
+    if not is_http_url(target_url):
+        return "Gecersiz URL", 400
+    if not is_proxy_host_allowed(target_url):
+        return "Host izinli degil", 403
+
+    # IMPORTANT: no content proxying, only redirect
+    return redirect_light(target_url, ttl=SHORT_TTL)
+
+@app.route("/canli/gold.m3u8", methods=["GET", "HEAD"])
+def proxy_gold():
+    g = auth_guard()
+    if g:
+        return g
+    return redirect_light("https://goldvod.site/live/hpgdisco/123456/266.m3u8", ttl=SHORT_TTL)
+
+@app.route("/canli/sup.m3u8", methods=["GET", "HEAD"])
+def proxy_sup():
+    g = auth_guard()
+    if g:
+        return g
+    return redirect_light(
+        "http://sup-4k.org:80/play/live.php?mac=00:1A:79:56:7A:24&stream=10740&extension=ts",
+        ttl=SHORT_TTL,
+    )
+
+@app.route("/canli/<kanal>", methods=["GET", "HEAD"])
+def stream_canli(kanal: str):
+    g = auth_guard()
+    if g:
+        return g
+
+    kanal = (kanal or "").strip().lower()
+
     dogus = {
         "dmax": "https://www.dmax.com.tr/canli-izle",
         "tlc": "https://www.tlctv.com.tr/canli-izle",
-        "ntv": "https://www.ntv.com.tr/canli-yayin/ntv"
+        "ntv": "https://www.ntv.com.tr/canli-yayin/ntv",
     }
 
     turkuvaz = {
         "atv": "https://cdn504.tvkulesi.com/atv.m3u8?hst=amp.tvkulesi.com&ch=atv",
         "ahaber": "https://cdn504.tvkulesi.com/ahaber.m3u8?hst=amp.tvkulesi.com&ch=a-haber",
-        "aspor": "https://cdn504.tvkulesi.com/aspor.m3u8?hst=amp.tvkulesi.com&ch=a-spor"
+        "aspor": "https://cdn504.tvkulesi.com/aspor.m3u8?hst=amp.tvkulesi.com&ch=a-spor",
     }
 
-    if kanal in dogus:
-        ref = dogus[kanal]
-        local_headers = {
-            "User-Agent": USER_AGENT,
-            "Referer": ref,
-            "Origin": _origin(ref)
-        }
-        link = fetch_dogus(dogus[kanal], local_headers)
-        if link:
-            return _redirect_no_cache(link)
+    cache_key = f"canli:{kanal}"
+    cached = cache_get(cache_key)
+    if cached:
+        return redirect_light(cached, ttl=SHORT_TTL)
 
     if kanal in turkuvaz:
-        return _redirect_no_cache(f"/canli/proxy?url={turkuvaz[kanal]}")
+        return redirect_light(turkuvaz[kanal], ttl=SHORT_TTL)
 
-    return "Kanal bulunamadı.", 404
+    if kanal in dogus:
+        link = fetch_dogus_stream(dogus[kanal])
+        if link:
+            cache_set(cache_key, link, ttl_sec=60)
+            return redirect_light(link, ttl=SHORT_TTL)
 
+    return "Kanal bulunamadi.", 404
 
-# -----------------------------------------------------------
-# 3) Evrensel çözücü
-# -----------------------------------------------------------
-
-@app.route('/api')
+@app.route("/api", methods=["GET", "HEAD"])
 def resolve_universal():
-    target_url = (request.args.get('url') or "").strip()
+    g = auth_guard()
+    if g:
+        return g
+
+    target_url = (request.args.get("url") or "").strip()
     if not target_url:
-        return "URL eksik. Kullanım: /api?url=...", 400
+        return "URL eksik. Kullanim: /api?url=...", 400
+    if not is_http_url(target_url):
+        return "Gecersiz URL", 400
 
-    if re.search(r'\.m3u8($|[?&])', target_url, re.IGNORECASE):
-        # Direkt m3u8 ise proxy üzerinden ver
-        return _redirect_no_cache(_build_proxy_url(target_url, _origin(target_url) + "/"))
+    cache_key = f"api:{target_url}"
+    cached = cache_get(cache_key)
+    if cached:
+        return redirect_light(cached, ttl=SHORT_TTL)
 
-    domain = _origin(target_url)
-    custom_headers = {
-        "User-Agent": USER_AGENT,
-        "Referer": domain + "/",
-        "Origin": domain
+    dom = origin_of(target_url)
+    headers = {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+        "Referer": (dom + "/") if dom else BASE_HEADERS["Referer"],
+        "Origin": dom if dom else BASE_HEADERS["Origin"],
     }
 
-    try:
-        solved = _resolve_stream_from_page(target_url, custom_headers)
-        if solved:
-            stream_url, ref = solved
-            return _redirect_no_cache(_build_proxy_url(stream_url, ref))
-    except Exception as e:
-        print(f"[resolve_universal] {e}", flush=True)
+    stream_url = resolve_from_page(target_url, headers=headers, max_iframes=5)
+    if stream_url:
+        cache_set(cache_key, stream_url, ttl_sec=NORMAL_TTL)
+        return redirect_light(stream_url, ttl=SHORT_TTL)
 
-    return "Video kaynağı bulunamadı.", 404
+    return "Video kaynagi bulunamadi.", 404
 
+@app.route("/yayin/<dizi>/<bolum>", methods=["GET", "HEAD"])
+def stream_dizi(dizi: str, bolum: str):
+    g = auth_guard()
+    if g:
+        return g
 
-# -----------------------------------------------------------
-# 4) Dizi / Film route
-# -----------------------------------------------------------
+    base = FILMHANE_BASE_DOMAIN
 
-@app.route('/yayin/<dizi>/<bolum>')
-def stream_dizi(dizi, bolum):
-    base_domain = "https://filmhane.fit"
-
-    sezon_no, bolum_no = _parse_episode(bolum)
-    dizi_url = f"{base_domain}/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
-    film_url = f"{base_domain}/film/{dizi}"
-
-    # Eski özel film eşleştirmeleri
     films = {
-        "28-yil-sonra": f"{base_domain}/film/28-yil-sonra-kemik-tapinagi",
-        "war-machine": f"{base_domain}/film/war-machine",
-        "banlieusards-3": f"{base_domain}/film/banlieusards-3",
-        "zeta": f"{base_domain}/film/zeta",
-        "crime-101": f"{base_domain}/film/crime-101",
-        "kagittan-hayatlar": f"{base_domain}/film/kagittan-hayatlar",
-        "the-wrecking-crew": f"{base_domain}/film/the-wrecking-crew",
-        "soyut-disavurumcu-bir-dostlugun-anatomisi-veyahut-yan-yana": f"{base_domain}/film/soyut-disavurumcu-bir-dostlugun-anatomisi-veyahut-yan-yana",
+        "28-yil-sonra": f"{base}/film/28-yil-sonra-kemik-tapinagi",
+        "war-machine": f"{base}/film/war-machine",
+        "banlieusards-3": f"{base}/film/banlieusards-3",
+        "zeta": f"{base}/film/zeta",
+        "crime-101": f"{base}/film/crime-101",
+        "kagittan-hayatlar": f"{base}/film/kagittan-hayatlar",
+        "the-wrecking-crew": f"{base}/film/the-wrecking-crew",
+        "ali-congun-ask-acisi": f"{base}/film/ali-congun-ask-acisi",
+        "peaky-blinders-the-immortal-man": f"{base}/film/peaky-blinders-the-immortal-man",
     }
 
-    candidates = []
     if dizi in films:
-        candidates.append(films[dizi])
-        candidates.append(dizi_url)  # fallback
+        target_page = films[dizi]
     else:
-        candidates.append(dizi_url)
-        candidates.append(film_url)  # kritik fallback
+        sezon_no, bolum_no = parse_episode_token(bolum)
+        target_page = f"{base}/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
 
-    # duplicate temizliği
-    seen = set()
-    ordered_candidates = []
-    for c in candidates:
-        if c not in seen:
-            seen.add(c)
-            ordered_candidates.append(c)
+    cache_key = f"yayin:{target_page}"
+    cached = cache_get(cache_key)
+    if cached:
+        return redirect_light(cached, ttl=SHORT_TTL)
 
-    fh_headers = {
-        "User-Agent": USER_AGENT,
-        "Referer": f"{base_domain}/",
-        "Origin": base_domain
+    base_origin = origin_of(base)
+    headers = {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+        "Referer": (base + "/"),
+        "Origin": base_origin if base_origin else BASE_HEADERS["Origin"],
     }
 
-    for candidate in ordered_candidates:
-        try:
-            solved = _resolve_stream_from_page(candidate, fh_headers)
-            if solved:
-                stream_url, ref = solved
-                return _redirect_no_cache(_build_proxy_url(stream_url, ref))
-        except Exception as e:
-            print(f"[stream_dizi] fail {candidate} -> {e}", flush=True)
+    stream_url = resolve_from_page(target_page, headers=headers, max_iframes=6)
+    if stream_url:
+        # short cache because many film links are tokenized
+        cache_set(cache_key, stream_url, ttl_sec=25)
+        return redirect_light(stream_url, ttl=15)
 
-    return "Yayın bulunamadı.", 404
+    return "Yayin bulunamadi.", 404
 
-
-# -----------------------------------------------------------
-# Ana sayfa
-# -----------------------------------------------------------
-
-@app.route('/')
-def home():
-    return "Aksaçlı Stream API V163.0 - Film fallback + HLS proxy active"
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
