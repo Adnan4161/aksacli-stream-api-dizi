@@ -446,6 +446,7 @@ def stream_dizi(dizi, bolum):
         "crime-101": f"{base_domain}/film/crime-101",
         "kagittan-hayatlar": f"{base_domain}/film/kagittan-hayatlar",
         "the-wrecking-crew": f"{base_domain}/film/the-wrecking-crew",
+        "soyut-disavurumcu-bir-dostlugun-anatomisi-veyahut-yan-yana": f"{base_domain}/film/soyut-disavurumcu-bir-dostlugun-anatomisi-veyahut-yan-yana",
     }
 
     candidates = []
