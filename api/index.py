@@ -1,7 +1,7 @@
 from flask import Flask, redirect, Response, request
 import requests
 import re
-from urllib.parse import urlparse # YENİ EKLENDİ: Dinamik domain (fit, ink vs) tespiti için
+from urllib.parse import urlparse
 
 app = Flask(__name__)
 
@@ -83,16 +83,14 @@ def stream_canli(kanal):
     return "Kanal bulunamadı.", 404
 
 # -----------------------------------------------------------
-# 3. YENİ: EVRENSEL ÇÖZÜCÜ (Tüm Filmhane Linkleri İçin)
+# 3. YENİ: EVRENSEL ÇÖZÜCÜ (Genişletilmiş Regex ile)
 # -----------------------------------------------------------
 @app.route('/api')
 def resolve_universal():
-    """Gelen herhangi bir Filmhane URL'sinden m3u8 linkini ayıklar ve yönlendirir"""
     target_url = request.args.get('url')
     if not target_url: 
         return "URL eksik. Kullanım: /api?url=...", 400
 
-    # Dinamik Domain Tespiti (.fit, .ink, .net vs)
     parsed_uri = urlparse(target_url)
     domain = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
     
@@ -105,23 +103,40 @@ def resolve_universal():
     try:
         res = requests.get(target_url, headers=custom_headers, timeout=10)
         res.encoding = 'utf-8'
+        html_content = res.text
         
-        # 1. İhtimal: Sayfada direkt m3u8 varsa
-        m3u8_match = re.search(r'["\'](https?://[^\s"\'<>]*?\.m3u8[^\s"\'<>]*)["\']', res.text)
-        if m3u8_match:
-            return redirect(m3u8_match.group(1).replace('\\', ''), code=302)
+        # 1. Genişletilmiş m3u8 Taraması (Kaçış karakterlerini temizler)
+        m3u8_matches = re.findall(r'["\'](https?://[^"\'\s]+\.m3u8[^"\'\s]*)["\']', html_content)
+        if m3u8_matches:
+            clean_url = m3u8_matches[0].replace('\\/', '/').replace('\\', '')
+            return redirect(clean_url, code=302)
 
-        # 2. İhtimal: Player bir iframe içindeyse
-        iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
+        # 2. Player içi alternatif (file: veya src:)
+        alt_match = re.search(r'(?:file|src)\s*:\s*["\'](https?://[^"\'\s]+\.m3u8[^"\'\s]*)["\']', html_content)
+        if alt_match:
+            clean_url = alt_match.group(1).replace('\\/', '/').replace('\\', '')
+            return redirect(clean_url, code=302)
+
+        # 3. İyileştirilmiş Iframe Taraması (Hem src hem data-src destekler)
+        iframes = re.findall(r'<iframe[^>]+(?:src|data-src)=["\']([^"\']+)["\']', html_content, re.IGNORECASE)
         for if_url in iframes:
             if if_url.startswith('//'): if_url = "https:" + if_url
             if not if_url.startswith('http'): continue
             
             try:
                 if_res = requests.get(if_url, headers=custom_headers, timeout=5)
-                if_match = re.search(r'["\'](https?://[^\s"\'<>]*?\.m3u8[^\s"\'<>]*)["\']', if_res.text)
-                if if_match:
-                    return redirect(if_match.group(1).replace('\\', ''), code=302)
+                
+                # Iframe içi m3u8
+                if_m3u8 = re.search(r'["\'](https?://[^"\'\s]+\.m3u8[^"\'\s]*)["\']', if_res.text)
+                if if_m3u8:
+                    clean_url = if_m3u8.group(1).replace('\\/', '/').replace('\\', '')
+                    return redirect(clean_url, code=302)
+                
+                # Iframe içi alternatif
+                if_alt = re.search(r'(?:file|src)\s*:\s*["\'](https?://[^"\'\s]+\.m3u8[^"\'\s]*)["\']', if_res.text)
+                if if_alt:
+                    clean_url = if_alt.group(1).replace('\\/', '/').replace('\\', '')
+                    return redirect(clean_url, code=302)
             except: 
                 continue
 
@@ -131,7 +146,7 @@ def resolve_universal():
     return "Video kaynağı bulunamadı.", 404
 
 # -----------------------------------------------------------
-# 4. ESKİ FİLMHANE SİSTEMİ (DOMAIN: .FIT) - (Bozulmaması için korundu)
+# 4. ESKİ FİLMHANE SİSTEMİ (Genişletilmiş Regex ile Güncellendi)
 # -----------------------------------------------------------
 @app.route('/yayin/<dizi>/<bolum>')
 def stream_dizi(dizi, bolum):
@@ -151,7 +166,6 @@ def stream_dizi(dizi, bolum):
 
     url = f"{base_domain}/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
     
-    # Özel film/kısa link tanımlamaları
     films = {
         "28-yil-sonra": f"{base_domain}/film/28-yil-sonra-kemik-tapinagi",
         "war-machine": f"{base_domain}/film/war-machine",
@@ -167,50 +181,49 @@ def stream_dizi(dizi, bolum):
     try:
         fh_headers = {"User-Agent": HEADERS["User-Agent"], "Referer": f"{base_domain}/"}
         res = requests.get(url, headers=fh_headers, timeout=10)
+        html_content = res.text
         
-        # Sayfada direkt m3u8 ara
-        match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', res.text)
-        if match: return redirect(match.group(1).replace('\\', ''), code=302)
-        
-        # Iframe'ler içinde m3u8 ara
-        iframes = re.findall(r'<iframe.*?src=["\'](.*?)["\']', res.text)
+        # 1. Genişletilmiş m3u8 Taraması
+        m3u8_matches = re.findall(r'["\'](https?://[^"\'\s]+\.m3u8[^"\'\s]*)["\']', html_content)
+        if m3u8_matches:
+            clean_url = m3u8_matches[0].replace('\\/', '/').replace('\\', '')
+            return redirect(clean_url, code=302)
+
+        # 2. Player içi alternatif
+        alt_match = re.search(r'(?:file|src)\s*:\s*["\'](https?://[^"\'\s]+\.m3u8[^"\'\s]*)["\']', html_content)
+        if alt_match:
+            clean_url = alt_match.group(1).replace('\\/', '/').replace('\\', '')
+            return redirect(clean_url, code=302)
+
+        # 3. İyileştirilmiş Iframe Taraması
+        iframes = re.findall(r'<iframe[^>]+(?:src|data-src)=["\']([^"\']+)["\']', html_content, re.IGNORECASE)
         for if_url in iframes:
             if if_url.startswith('//'): if_url = "https:" + if_url
+            if not if_url.startswith('http'): continue
+            
             try:
                 if_res = requests.get(if_url, headers=fh_headers, timeout=5)
-                if_match = re.search(r'["\'](https?://[^\s^"^\']+\.m3u8[^\s^"^\']*)["\']', if_res.text)
-                if if_match: return redirect(if_match.group(1).replace('\\', ''), code=302)
-            except: continue
+                
+                if_m3u8 = re.search(r'["\'](https?://[^"\'\s]+\.m3u8[^"\'\s]*)["\']', if_res.text)
+                if if_m3u8:
+                    clean_url = if_m3u8.group(1).replace('\\/', '/').replace('\\', '')
+                    return redirect(clean_url, code=302)
+                
+                if_alt = re.search(r'(?:file|src)\s*:\s*["\'](https?://[^"\'\s]+\.m3u8[^"\'\s]*)["\']', if_res.text)
+                if if_alt:
+                    clean_url = if_alt.group(1).replace('\\/', '/').replace('\\', '')
+                    return redirect(clean_url, code=302)
+            except: 
+                continue
     except: pass
     return "Yayın bulunamadı.", 404
-
-# -----------------------------------------------------------
-# 5. TEST ROTASI (Hata Ayıklama İçin)
-# -----------------------------------------------------------
-@app.route('/test-zeta')
-def test_zeta():
-    url = "https://filmhane.fit/film/zeta"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": "https://filmhane.fit/"}
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        
-        if res.status_code in [403, 503]:
-            return f"<h1>CLOUDFLARE ENGELİ!</h1> <p>Site Vercel'i banlamış. Durum Kodu: {res.status_code}</p>"
-        
-        if "m3u8" in res.text or "iframe" in res.text:
-            return f"<h1>BAĞLANTI VAR!</h1> <p>Kod: {res.status_code}. Sayfada m3u8 veya iframe bulundu ama Regex kodumuz bunu yakalayamıyor. Regex güncellenmeli.</p>"
-        else:
-            return f"<h1>VİDEO GİZLENMİŞ!</h1> <p>Bağlantı başarılı (Kod: {res.status_code}) ama sayfada ne m3u8 ne de açık iframe var. Site yapıyı değiştirmiş.</p>"
-            
-    except Exception as e:
-        return f"SUNUCU HATASI: {str(e)}"
 
 # -----------------------------------------------------------
 # ANA SAYFA
 # -----------------------------------------------------------
 @app.route('/')
 def home():
-    return "Aksaçlı Stream API V162.6 - Filmhane & Canlı TV Active (Ultra Clean + Universal)"
+    return "Aksaçlı Stream API V162.7 - Filmhane & Canlı TV Active (Genişletilmiş Regex Sürümü)"
 
 if __name__ == '__main__':
     app.run(debug=True)
