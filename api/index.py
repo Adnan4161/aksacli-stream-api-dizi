@@ -185,6 +185,27 @@ def stream_dizi(dizi, bolum):
     return "Yayın bulunamadı.", 404
 
 # -----------------------------------------------------------
+# 5. TEST ROTASI (Hata Ayıklama İçin)
+# -----------------------------------------------------------
+@app.route('/test-zeta')
+def test_zeta():
+    url = "https://filmhane.fit/film/zeta"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": "https://filmhane.fit/"}
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        
+        if res.status_code in [403, 503]:
+            return f"<h1>CLOUDFLARE ENGELİ!</h1> <p>Site Vercel'i banlamış. Durum Kodu: {res.status_code}</p>"
+        
+        if "m3u8" in res.text or "iframe" in res.text:
+            return f"<h1>BAĞLANTI VAR!</h1> <p>Kod: {res.status_code}. Sayfada m3u8 veya iframe bulundu ama Regex kodumuz bunu yakalayamıyor. Regex güncellenmeli.</p>"
+        else:
+            return f"<h1>VİDEO GİZLENMİŞ!</h1> <p>Bağlantı başarılı (Kod: {res.status_code}) ama sayfada ne m3u8 ne de açık iframe var. Site yapıyı değiştirmiş.</p>"
+            
+    except Exception as e:
+        return f"SUNUCU HATASI: {str(e)}"
+
+# -----------------------------------------------------------
 # ANA SAYFA
 # -----------------------------------------------------------
 @app.route('/')
