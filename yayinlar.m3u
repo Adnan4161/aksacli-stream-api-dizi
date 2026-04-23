@@ -2,7 +2,7 @@
 #EXTINF:-1 tvg-logo="https://filmhane.fit/uploads/series/original/asylum-678.webp", Asylum 1. Sezon 1. Bölüm
 https://aksacli-stream-api-dizi.vercel.app/yayin/asylum/1
 #EXTINF:-1 tvg-logo="https://filmhane.fit/uploads/series/original/asylum-678.webp", Asylum 1. Sezon 2. Bölüm
-https://aksacli-stream-api-dizi.vercel.app/api?url=https://filmhane.fit/dizi/asylum/sezon-1/bolum-2
+https://aksacli-stream-api-dizi.vercel.app/yayin/asylum/2
 #EXTINF:-1 tvg-logo="https://filmhane.fit/uploads/series/original/asylum-678.webp", Asylum 1. Sezon 3. Bölüm
 https://aksacli-stream-api-dizi.vercel.app/yayin/asylum/3
 #EXTINF:-1 tvg-logo="https://filmhane.fit/uploads/series/original/asylum-678.webp", Asylum 1. Sezon 4. Bölüm
