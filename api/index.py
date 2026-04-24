@@ -13,7 +13,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V173"
+VERSION = "V174"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -585,16 +585,33 @@ def stream_dizi(dizi, bolum):
         "the-wrecking-crew": f"{base}/film/the-wrecking-crew",
         "ali-congun-ask-acisi": f"{base}/film/ali-congun-ask-acisi",
         "peaky-blinders-the-immortal-man": f"{base}/film/peaky-blinders-the-immortal-man",
+        "soyut-disavurumcu-bir-dostlugun-anatomisi-veyahut-yan-yana": f"{base}/film/soyut-disavurumcu-bir-dostlugun-anatomisi-veyahut-yan-yana",
     }
 
+    sezon_no, bolum_no = parse_episode_token(bolum)
+    dizi_target = f"{base}/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
+    film_target = f"{base}/film/{dizi}"
+
+    # Map varsa onu oncele, yoksa once dizi sonra film fallback dene.
+    candidates = []
     if dizi in films:
-        target_page = films[dizi]
+        candidates.append(films[dizi])
+        candidates.append(dizi_target)
     else:
-        sezon_no, bolum_no = parse_episode_token(bolum)
-        target_page = f"{base}/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
+        candidates.append(dizi_target)
+        candidates.append(film_target)
+
+    # dedup keep order
+    ordered_candidates = []
+    seen_candidates = set()
+    for c in candidates:
+        if c in seen_candidates:
+            continue
+        seen_candidates.add(c)
+        ordered_candidates.append(c)
 
     # token links can expire quickly -> tiny cache
-    ck = f"yayin:{target_page}"
+    ck = f"yayin:{dizi}:{bolum}"
     cached = cache_get(ck)
     if cached:
         return redirect_light(cached, ttl=5)
@@ -606,11 +623,12 @@ def stream_dizi(dizi, bolum):
         "Origin": base_origin if base_origin else BASE_HEADERS["Origin"],
     }
 
-    stream_url = resolve_from_page(target_page, headers=headers, max_depth=3)
-    if stream_url:
-        cache_set(ck, stream_url, 5)
-        playback_headers = make_playback_headers(stream_url=stream_url)
-        return respond_stream(stream_url, playback_headers=playback_headers, ttl=5)
+    for target_page in ordered_candidates:
+        stream_url = resolve_from_page(target_page, headers=headers, max_depth=3)
+        if stream_url:
+            cache_set(ck, stream_url, 5)
+            playback_headers = make_playback_headers(stream_url=stream_url)
+            return respond_stream(stream_url, playback_headers=playback_headers, ttl=5)
 
     return "Yayin bulunamadi.", 404
 
