@@ -165,6 +165,10 @@ https://aksacli-stream-api-dizi.vercel.app/yayin/onbesliler/S1B9
 https://aksacli-stream-api-dizi.vercel.app/yayin/onbesliler/S1B10
 
 
+#EXTINF:-1 tvg-logo="https://filmhane.fit/uploads/series/original/the-madison-855.webp" group-title="Pay", Pay 1. Bölüm
+https://aksacli-stream-api-dizi.vercel.app/yayin/pay/S1B1
+
+
 #EXTINF:-1 tvg-logo="https://filmhane.fit/uploads/series/original/the-madison-855.webp" group-title="The Madison", The Madison 1. Bölüm
 https://aksacli-stream-api-dizi.vercel.app/yayin/the-madison/S1B1
 #EXTINF:-1 tvg-logo="https://filmhane.fit/uploads/series/original/the-madison-855.webp" group-title="The Madison", The Madison 2. Bölüm
