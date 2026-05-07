@@ -26,7 +26,7 @@ BASE_HEADERS = {
 }
 
 API_KEY = os.getenv("API_KEY", "").strip()
-FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.fit").rstrip("/")
+FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.ink").rstrip("/")
 
 _ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
 PROXY_ALLOWED_HOSTS = {
