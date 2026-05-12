@@ -56,11 +56,11 @@ https://s230.rapidrame.com/hls2/01/00026/pc8mgegnlbqn_,l,n,.urlset/master.m3u8?t
 https://aksacli-stream-api-dizi.vercel.app/yayin/a-knight-of-the-seven-kingdoms/6
 
 
-#EXTINF:-1 tvg-logo="https://cms-tabii-public-image.tabii.com/int/webp/w600/q84/63520_0-0-2557-3840.jpeg",Beyaz Kurtlar Krallığı 1.Bölüm
+#EXTINF:-1 tvg-logo="https://www.filmhane.ink/uploads/series/577563b4f3d08a31a7a07e35.webp" group-title="Beyaz Kurtlar Krallığı",Beyaz Kurtlar Krallığı 1.Bölüm
 https://aksacli-stream-api-dizi.vercel.app/yayin/beyaz-kurtlar-kralligi-izle/S3B1
-#EXTINF:-1 tvg-logo="https://cms-tabii-public-image.tabii.com/int/webp/w600/q84/63520_0-0-2557-3840.jpeg",Beyaz Kurtlar Krallığı 2.Bölüm
+#EXTINF:-1 tvg-logo="https://www.filmhane.ink/uploads/series/577563b4f3d08a31a7a07e35.webp" group-title="Beyaz Kurtlar Krallığı",Beyaz Kurtlar Krallığı 2.Bölüm
 https://aksacli-stream-api-dizi.vercel.app/yayin/beyaz-kurtlar-kralligi-izlel/S3B2
-#EXTINF:-1 tvg-logo="https://cms-tabii-public-image.tabii.com/int/webp/w600/q84/63520_0-0-2557-3840.jpeg",Beyaz Kurtlar Krallığı 3.Bölüm
+#EXTINF:-1 tvg-logo="https://www.filmhane.ink/uploads/series/577563b4f3d08a31a7a07e35.webp" group-title="Beyaz Kurtlar Krallığı",Beyaz Kurtlar Krallığı 3.Bölüm
 https://aksacli-stream-api-dizi.vercel.app/yayin/beyaz-kurtlar-kralligi-izle/S3B3
 
 
@@ -206,12 +206,6 @@ https://aksacli-stream-api-dizi.vercel.app/yayin/p-a-y-2026-izle/S1B7
 https://aksacli-stream-api-dizi.vercel.app/yayin/p-a-y-2026-izle/S1B8
 
 
-#EXTINF:-1 tvg-logo="https://www.filmhane.ink/uploads/series/c535a80641efa3d7c6ec2a86.webp" group-title="Plastic Cup Boyz",Plastic Cup Boyz 1. Bölüm Joey Wells
-https://aksacli-stream-api-dizi.vercel.app/yayin/plastic-cup-boyz-laughing-my-mask-off-izle/S1B1
-#EXTINF:-1 tvg-logo="https://www.filmhane.ink/uploads/series/c535a80641efa3d7c6ec2a86.webp" group-title="Plastic Cup Boyz",Plastic Cup Boyz 2. Bölüm Spank Horton
-https://aksacli-stream-api-dizi.vercel.app/yayin/plastic-cup-boyz-laughing-my-mask-off-izle/S1B2
-
-
 #EXTINF:-1 group-title="Reacher" tvg-logo="https://image.tmdb.org/t/p/w400/15xLLZN3LLAdvoiHnYL5DcXlsYu.jpg",Reacher S01E01 - Margrave'e Hoş geldin
 https://vidmody.com/vs/tt9288030/s1/e01
 #EXTINF:-1 group-title="Reacher" tvg-logo="https://image.tmdb.org/t/p/w400/4nfnpqWMX8dHI1bYZcdxLEvy2c9.jpg",  Reacher S01E02 - İlk Dans
@@ -282,6 +276,14 @@ https://aksacli-stream-api-dizi.vercel.app/yayin/temiz-para/S1B8
 https://aksacli-stream-api-dizi.vercel.app/yayin/temiz-para/S1B9
 #EXTINF:-1 tvg-logo="https://m.media-amazon.com/images/M/MV5BOWNkNWI2MzUtY2QxZS00YjAwLWJhYmUtZjBmMmE4MTM0YTA4XkEyXkFqcGc@._V1_FMjpg_UX1000_.jpg" group-title="Temiz Para",Temiz Para 10. Bölüm
 https://aksacli-stream-api-dizi.vercel.app/yayin/temiz-para/S1B10
+
+
+#EXTINF:-1 tvg-logo="https://www.filmhane.ink/uploads/series/2e1f582ccad0136cb251b213.webp",The Lion Ranger 1.Bölüm
+https://aksacli-stream-api-dizi.vercel.app/yayin/the-lion-ranger-izle/B1
+#EXTINF:-1 tvg-logo="https://www.filmhane.ink/uploads/series/2e1f582ccad0136cb251b213.webp",The Lion Ranger 2.Bölüm
+https://aksacli-stream-api-dizi.vercel.app/yayin/the-lion-ranger-izle/B2
+#EXTINF:-1 tvg-logo="https://www.filmhane.ink/uploads/series/2e1f582ccad0136cb251b213.webp",The Lion Ranger 3.Bölüm
+https://aksacli-stream-api-dizi.vercel.app/yayin/the-lion-ranger-izle/B3
 
 
 #EXTINF:-1 tvg-logo="https://www.filmhane.ink/uploads/series/242792116425dccecb16de5e.webp" group-title="The Madison", The Madison 1. Bölüm
