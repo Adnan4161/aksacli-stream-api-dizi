@@ -191,14 +191,23 @@ def make_playback_headers(stream_url, referer_hint="", origin_hint=""):
 def respond_stream(stream_url, playback_headers=None, ttl=SHORT_TTL):
     playback_headers = playback_headers or {}
     if wants_json():
+        out_url = (stream_url or "").strip()
+
+        # JSON modunda relative URL dönerse bazı player açamıyor.
+        # Bu yüzden absolute URL'ye çevir.
+        if out_url.startswith("/"):
+            root = (request.url_root or "").rstrip("/")
+            out_url = root + out_url
+
         return {
             "ok": True,
             "mode": "json",
-            "url": stream_url,
+            "url": out_url,
             "headers": playback_headers,
             "ttl": max(1, int(ttl)),
         }
     return redirect_light(stream_url, ttl=ttl)
+
 
 
 def fetch_text(url, headers, timeout_sec=DEFAULT_TIMEOUT):
@@ -574,8 +583,16 @@ def canlitv_proxy():
     if not target_url or not is_http_url(target_url):
         return "Gecersiz hedef URL", 400
 
-    if not is_proxy_host_allowed(target_url):
-        return "Host izinli degil", 403
+host = (urlparse(target_url).hostname or "").lower()
+is_canlitv_host = (
+    host.endswith("canlitv.fun")
+    or host.endswith("canlitv.diy")
+)
+
+# canlitv akışı için allowlist bypass
+if (not is_canlitv_host) and (not is_proxy_host_allowed(target_url)):
+    return "Host izinli degil", 403
+
 
     stream_origin = origin_of(target_url)
     if not referer_hint and stream_origin:
