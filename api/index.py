@@ -4,7 +4,7 @@ import os
 import re
 import time
 from threading import Lock
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlencode
 
 import requests
 from bs4 import BeautifulSoup
@@ -13,7 +13,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V174"
+VERSION = "V175"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -56,6 +56,7 @@ RE_IFRAME = re.compile(r"<iframe[^>]+(?:src|data-src)=[\"']([^\"']+)[\"']", re.I
 RE_DATA_EMBED = re.compile(r"data-(?:hhs|frame)=[\"']([^\"']+)[\"']", re.IGNORECASE)
 RE_PLAYERJS_FETCH = re.compile(r"""fetch\(\s*[\"']([^\"']*?/dl\?op=get_stream[^\"']*)[\"']\s*\)""", re.IGNORECASE)
 RE_JS_COOKIE = re.compile(r"""\$\.cookie\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]*)['\"]""", re.IGNORECASE)
+RE_JWPLAYER_FILE = re.compile(r"""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']""", re.IGNORECASE)
 
 
 # HTTP session with tiny retry
@@ -440,6 +441,73 @@ def fetch_dogus_stream(landing_url):
     return resolve_from_page(landing_url, headers=headers, max_depth=1)
 
 
+def resolve_canlitv_embed_stream(embed_url):
+    dom = origin_of(embed_url)
+    headers = {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+        "Referer": (dom + "/") if dom else BASE_HEADERS["Referer"],
+        "Origin": dom if dom else BASE_HEADERS["Origin"],
+    }
+
+    html = fetch_text(embed_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not html:
+        return ""
+
+    direct = extract_m3u8_candidates(html, embed_url)
+    if direct:
+        return direct[0]
+
+    jw = RE_JWPLAYER_FILE.search(html)
+    if jw:
+        u = normalize_url(jw.group(1), embed_url)
+        if is_http_url(u):
+            return u
+
+    return resolve_from_page(embed_url, headers=headers, max_depth=1)
+
+
+def build_canlitv_proxy_url(target_url, referer_hint="", origin_hint=""):
+    params = {"u": target_url}
+    if referer_hint:
+        params["r"] = referer_hint
+    if origin_hint:
+        params["o"] = origin_hint
+    return "/canlitv_proxy?" + urlencode(params)
+
+
+def rewrite_canlitv_m3u8(playlist_text, base_url, referer_hint, origin_hint):
+    out = []
+
+    def _rewrite_uri_attr(match):
+        raw = match.group(1)
+        abs_url = normalize_url(raw, base_url)
+        if not is_http_url(abs_url):
+            return match.group(0)
+        proxy_url = build_canlitv_proxy_url(abs_url, referer_hint, origin_hint)
+        return f'URI="{proxy_url}"'
+
+    for line in (playlist_text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            out.append(line)
+            continue
+
+        if stripped.startswith("#"):
+            # Rewrite URI="..." in tags like EXT-X-KEY / EXT-X-MEDIA / EXT-X-MAP
+            rewritten = re.sub(r'URI="([^"]+)"', _rewrite_uri_attr, line)
+            out.append(rewritten)
+            continue
+
+        # Media playlist / variant playlist URL line
+        abs_url = normalize_url(stripped, base_url)
+        if is_http_url(abs_url):
+            out.append(build_canlitv_proxy_url(abs_url, referer_hint, origin_hint))
+        else:
+            out.append(line)
+
+    return "\n".join(out) + "\n"
+
+
 @app.route("/", methods=["GET", "HEAD"])
 def home():
     return f"Aksacli Stream API {VERSION} - redirect-only quota-safe"
@@ -491,6 +559,114 @@ def proxy_sup():
         "http://sup-4k.org:80/play/live.php?mac=00:1A:79:56:7A:24&stream=10740&extension=ts",
         ttl=SHORT_TTL,
     )
+
+
+@app.route("/canlitv_proxy", methods=["GET", "HEAD"])
+def canlitv_proxy():
+    g = auth_guard()
+    if g:
+        return g
+
+    target_url = (request.args.get("u") or "").strip()
+    referer_hint = (request.args.get("r") or "").strip()
+    origin_hint = (request.args.get("o") or "").strip()
+
+    if not target_url or not is_http_url(target_url):
+        return "Gecersiz hedef URL", 400
+
+    if not is_proxy_host_allowed(target_url):
+        return "Host izinli degil", 403
+
+    stream_origin = origin_of(target_url)
+    if not referer_hint and stream_origin:
+        referer_hint = stream_origin + "/"
+    if not origin_hint and stream_origin:
+        origin_hint = stream_origin
+
+    headers = {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+    }
+    if referer_hint:
+        headers["Referer"] = referer_hint
+    if origin_hint:
+        headers["Origin"] = origin_hint
+
+    try:
+        upstream = SESSION.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT, allow_redirects=True)
+    except Exception:
+        return "Upstream baglanti hatasi", 502
+
+    if upstream.status_code >= 400:
+        return Response(upstream.text or "Upstream hata", status=upstream.status_code)
+
+    content_type = (upstream.headers.get("Content-Type") or "").lower()
+    upstream_text = upstream.text or ""
+    is_playlist = (
+        ".m3u8" in (upstream.url or target_url).lower()
+        or "mpegurl" in content_type
+        or upstream_text.lstrip().startswith("#EXTM3U")
+    )
+
+    if is_playlist:
+        rewritten = rewrite_canlitv_m3u8(
+            playlist_text=upstream_text,
+            base_url=(upstream.url or target_url),
+            referer_hint=referer_hint,
+            origin_hint=origin_hint,
+        )
+        resp = Response(rewritten, status=200, mimetype="application/vnd.apple.mpegurl")
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    # Segment / key / binary passthrough
+    resp = Response(upstream.content, status=upstream.status_code)
+    if upstream.headers.get("Content-Type"):
+        resp.headers["Content-Type"] = upstream.headers["Content-Type"]
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/canlitv/<channel_id>", methods=["GET", "HEAD"])
+def resolve_canlitv_channel(channel_id):
+    g = auth_guard()
+    if g:
+        return g
+
+    channel = re.sub(r"[^0-9]", "", str(channel_id or ""))
+    if not channel:
+        return "Kanal id gecersiz.", 400
+
+    embed_url = f"https://www.canlitv.diy/embed/?id={channel}"
+    ck = f"canlitv:{channel}"
+
+    cached = cache_get(ck)
+    if cached:
+        proxy_url = build_canlitv_proxy_url(
+            target_url=cached,
+            referer_hint=embed_url,
+            origin_hint=origin_of(embed_url),
+        )
+        return respond_stream(proxy_url, playback_headers={}, ttl=5)
+
+    stream_url = resolve_canlitv_embed_stream(embed_url)
+    if stream_url:
+        cache_set(ck, stream_url, 5)
+        proxy_url = build_canlitv_proxy_url(
+            target_url=stream_url,
+            referer_hint=embed_url,
+            origin_hint=origin_of(embed_url),
+        )
+        return respond_stream(proxy_url, playback_headers={}, ttl=5)
+
+    return "CanliTV yayin linki bulunamadi.", 404
+
+
+@app.route("/canlitv", methods=["GET", "HEAD"])
+def resolve_canlitv_channel_query():
+    channel_id = (request.args.get("id") or "").strip()
+    return resolve_canlitv_channel(channel_id)
 
 
 @app.route("/canli/<kanal>", methods=["GET", "HEAD"])
@@ -557,6 +733,19 @@ def resolve_universal():
     stream_url = resolve_from_page(target_url, headers=headers, max_depth=3)
     if stream_url:
         cache_set(ck, stream_url, NORMAL_TTL)
+
+        # canlitv embed links may need referer/origin for ts/key requests:
+        # always route via our proxy in this case.
+        t_low = target_url.lower()
+        s_low = stream_url.lower()
+        if "canlitv.diy/embed" in t_low or "canlitv.fun" in s_low:
+            proxy_url = build_canlitv_proxy_url(
+                target_url=stream_url,
+                referer_hint=(dom + "/") if dom else "",
+                origin_hint=dom,
+            )
+            return respond_stream(proxy_url, playback_headers={}, ttl=5)
+
         playback_headers = make_playback_headers(
             stream_url=stream_url,
             referer_hint=dom + "/" if dom else "",
