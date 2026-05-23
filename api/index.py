@@ -587,6 +587,8 @@ def stream_dizi(dizi, bolum):
         "peaky-blinders-the-immortal-man": f"{base}/film/peaky-blinders-the-immortal-man",
         "soyut-disavurumcu-bir-dostlugun-anatomisi-veyahut-yan-yana": f"{base}/film/soyut-disavurumcu-bir-dostlugun-anatomisi-veyahut-yan-yana",
         "tom-clancy-039-s-jack-ryan-ghost-war": f"{base}/film/tom-clancy-039-s-jack-ryan-ghost-war",
+        "adile-nasit-izle": f"{base}/film/adile-nasit-izle",
+        "ladies-first": f"{base}/film/ladies-first",
         "king-ivory": f"{base}/film/king-ivory",
     }
 
