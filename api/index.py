@@ -590,6 +590,7 @@ def stream_dizi(dizi, bolum):
         "adile-nasit-izle": f"{base}/film/adile-nasit-izle",
         "ladies-first": f"{base}/film/ladies-first",
         "king-ivory": f"{base}/film/king-ivory",
+        "worldbreaker": f"{base}/film/worldbreaker",
     }
 
     sezon_no, bolum_no = parse_episode_token(bolum)
