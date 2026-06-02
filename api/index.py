@@ -591,6 +591,8 @@ def stream_dizi(dizi, bolum):
         "ladies-first": f"{base}/film/ladies-first",
         "king-ivory": f"{base}/film/king-ivory",
         "worldbreaker": f"{base}/film/worldbreaker",
+        "Juror #2": f"{base}/film/Juror #2",
+        "giant": f"{base}/film/giant",
     }
 
     sezon_no, bolum_no = parse_episode_token(bolum)
