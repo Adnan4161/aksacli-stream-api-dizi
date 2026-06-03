@@ -593,6 +593,7 @@ def stream_dizi(dizi, bolum):
         "worldbreaker": f"{base}/film/worldbreaker",
         "Juror #2": f"{base}/film/Juror #2",
         "giant": f"{base}/film/giant",
+        "k-pops": f"{base}/film/k-pops",
     }
 
     sezon_no, bolum_no = parse_episode_token(bolum)
