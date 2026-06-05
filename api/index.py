@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V178"
+VERSION = "V179"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -567,7 +567,13 @@ def choose_vaplayer_stream(streams):
     if not candidates:
         return ""
 
-    # Keep the provider's own priority first; prefer HLS playlists over any other future value.
+    # Direct playback follows redirects without carrying custom Referer/Origin headers.
+    # Prefer JustHD CDN URLs because they currently expose playlists without a referrer gate.
+    for u in candidates:
+        host = (urlparse(u).hostname or "").lower()
+        if host.endswith("justhd.tv") or "/list.m3u8" in u.lower():
+            return u
+
     return candidates[0]
 
 
