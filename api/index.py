@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V177"
+VERSION = "V178"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -30,6 +30,7 @@ BASE_HEADERS = {
 API_KEY = os.getenv("API_KEY", "").strip()
 FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.ink").rstrip("/")
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
+VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 
 _ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
 PROXY_ALLOWED_HOSTS = {
@@ -128,6 +129,10 @@ def is_http_url(value):
         return p.scheme in ("http", "https") and bool(p.netloc)
     except Exception:
         return False
+
+
+def is_imdb_id(value):
+    return bool(re.match(r"^tt\d+$", (value or "").strip(), re.IGNORECASE))
 
 
 def normalize_url(raw, base_url=""):
@@ -547,6 +552,73 @@ def build_fullhd_targets(slug, sezon_no, bolum_no):
     ]
 
 
+def vaplayer_embed_url(media_type, imdb_id):
+    kind = "tv" if media_type == "tv" else "movie"
+    return f"https://brightpathsignals.com/embed/{kind}/{imdb_id}"
+
+
+def choose_vaplayer_stream(streams):
+    candidates = []
+    for raw in streams or []:
+        u = normalize_url(str(raw or ""), "")
+        if is_http_url(u) and ".m3u8" in u.lower():
+            candidates.append(u)
+
+    if not candidates:
+        return ""
+
+    # Keep the provider's own priority first; prefer HLS playlists over any other future value.
+    return candidates[0]
+
+
+def resolve_vaplayer_imdb(imdb_id, media_type, season_no="", episode_no=""):
+    imdb_id = (imdb_id or "").strip()
+    media_type = "tv" if media_type == "tv" else "movie"
+    if not is_imdb_id(imdb_id):
+        return ""
+
+    params = {
+        "imdb": imdb_id,
+        "type": media_type,
+    }
+    if media_type == "tv":
+        if not season_no or not episode_no:
+            return ""
+        params["season"] = str(season_no)
+        params["episode"] = str(episode_no)
+
+    embed_url = vaplayer_embed_url(media_type, imdb_id)
+    headers = {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": embed_url,
+        "Origin": "https://brightpathsignals.com",
+    }
+
+    try:
+        response = SESSION.get(
+            VAPLAYER_STREAM_API_URL,
+            params=params,
+            headers=headers,
+            timeout=max(DEFAULT_TIMEOUT, 20),
+            allow_redirects=True,
+        )
+        if response.status_code >= 400:
+            return ""
+        payload = response.json()
+    except Exception:
+        return ""
+
+    status_code = str(payload.get("status_code", "")).strip()
+    if status_code and status_code != "200":
+        return ""
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    streams = data.get("stream_urls") if isinstance(data, dict) else []
+    return choose_vaplayer_stream(streams)
+
+
 def fetch_dogus_stream(landing_url):
     page_origin = origin_of(landing_url)
     headers = {
@@ -581,7 +653,7 @@ def health():
         "ok": True,
         "version": VERSION,
         "mode": "redirect-only",
-        "resolver": "playerjs-dl-fullhd-enabled",
+        "resolver": "playerjs-dl-fullhd-vaplayer-enabled",
         "cache_items": len(_CACHE),
         "api_key_enabled": bool(API_KEY),
     }
@@ -695,6 +767,53 @@ def resolve_universal():
         return respond_stream(stream_url, playback_headers=playback_headers, ttl=SHORT_TTL)
 
     return "Video kaynagi bulunamadi.", 404
+
+
+def respond_vaplayer_imdb(media_type, imdb_id, season_no="", episode_no=""):
+    g = auth_guard()
+    if g:
+        return g
+
+    imdb_id = (imdb_id or "").strip()
+    media_type = "tv" if media_type == "tv" else "movie"
+    if not is_imdb_id(imdb_id):
+        return "Gecersiz IMDb ID", 400
+
+    season_no = str(season_no or "").strip()
+    episode_no = str(episode_no or "").strip()
+    ck = f"imdb:{media_type}:{imdb_id}:{season_no}:{episode_no}"
+    cached = cache_get(ck)
+    if cached:
+        stream_url = cached
+    else:
+        stream_url = resolve_vaplayer_imdb(imdb_id, media_type, season_no, episode_no)
+        if not stream_url:
+            return "Yayin bulunamadi.", 404
+        cache_set(ck, stream_url, SHORT_TTL)
+
+    embed_url = vaplayer_embed_url(media_type, imdb_id)
+    playback_headers = make_playback_headers(
+        stream_url=stream_url,
+        referer_hint=embed_url,
+        origin_hint="https://brightpathsignals.com",
+    )
+    return respond_stream(stream_url, playback_headers=playback_headers, ttl=SHORT_TTL)
+
+
+@app.route("/imdb/movie/<imdb_id>", methods=["GET", "HEAD"])
+def stream_imdb_movie(imdb_id):
+    return respond_vaplayer_imdb("movie", imdb_id)
+
+
+@app.route("/imdb/tv/<imdb_id>/<episode_token>", methods=["GET", "HEAD"])
+def stream_imdb_tv_token(imdb_id, episode_token):
+    season_no, episode_no = parse_episode_token(episode_token)
+    return respond_vaplayer_imdb("tv", imdb_id, season_no, episode_no)
+
+
+@app.route("/imdb/tv/<imdb_id>/<season_no>/<episode_no>", methods=["GET", "HEAD"])
+def stream_imdb_tv_parts(imdb_id, season_no, episode_no):
+    return respond_vaplayer_imdb("tv", imdb_id, season_no, episode_no)
 
 
 @app.route("/yayin/<dizi>/<bolum>", methods=["GET", "HEAD"])
