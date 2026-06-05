@@ -1,4 +1,6 @@
 from flask import Flask, Response, request
+import base64
+import html as html_lib
 import json
 import os
 import re
@@ -13,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V174"
+VERSION = "V176"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -27,6 +29,7 @@ BASE_HEADERS = {
 
 API_KEY = os.getenv("API_KEY", "").strip()
 FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.ink").rstrip("/")
+FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
 
 _ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
 PROXY_ALLOWED_HOSTS = {
@@ -54,6 +57,10 @@ RE_M3U8_FILESRC = re.compile(r"(?:file|src)\s*[:=]\s*[\"']([^\"']+\.m3u8[^\"']*)
 RE_DAION = re.compile(r"[\"'](https?:?\\?/\\?/[^\s\"'<>]*?daioncdn[^\s\"'<>]*?\.m3u8[^\s\"'<>]*?)[\"']", re.IGNORECASE)
 RE_IFRAME = re.compile(r"<iframe[^>]+(?:src|data-src)=[\"']([^\"']+)[\"']", re.IGNORECASE)
 RE_DATA_EMBED = re.compile(r"data-(?:hhs|frame)=[\"']([^\"']+)[\"']", re.IGNORECASE)
+RE_FULLHD_VIDEO_DATA = re.compile(
+    r"""videoPlayerData\(\s*JSON\.parse\('((?:\\'|[^'])*)'\)\s*,\s*'([^']*)'""",
+    re.IGNORECASE | re.DOTALL,
+)
 RE_PLAYERJS_FETCH = re.compile(r"""fetch\(\s*[\"']([^\"']*?/dl\?op=get_stream[^\"']*)[\"']\s*\)""", re.IGNORECASE)
 RE_JS_COOKIE = re.compile(r"""\$\.cookie\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]*)['\"]""", re.IGNORECASE)
 
@@ -200,15 +207,32 @@ def respond_stream(stream_url, playback_headers=None, ttl=SHORT_TTL):
     return redirect_light(stream_url, ttl=ttl)
 
 
-def fetch_text(url, headers, timeout_sec=DEFAULT_TIMEOUT):
+def fetch_text_with_final_url(url, headers, timeout_sec=DEFAULT_TIMEOUT):
     try:
         r = SESSION.get(url, headers=headers, timeout=timeout_sec, allow_redirects=True)
         if r.status_code >= 400:
-            return ""
+            return "", url
         r.encoding = r.encoding or "utf-8"
-        return r.text or ""
+        return r.text or "", r.url or url
     except Exception:
-        return ""
+        return "", url
+
+
+def fetch_text(url, headers, timeout_sec=DEFAULT_TIMEOUT):
+    text, _ = fetch_text_with_final_url(url, headers, timeout_sec=timeout_sec)
+    return text
+
+
+def build_page_headers(page_url, referer_url=""):
+    page_origin = origin_of(page_url)
+    ref = referer_url or (page_origin + "/" if page_origin else BASE_HEADERS["Referer"])
+    return {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": ref,
+        "Origin": page_origin if page_origin else BASE_HEADERS["Origin"],
+    }
 
 
 def dedup_keep_order(items):
@@ -266,6 +290,70 @@ def extract_iframe_candidates(text, base_url):
                     urls.append(u)
         except Exception:
             pass
+
+    for u in extract_fullhd_iframe_candidates(text, base_url):
+        urls.append(u)
+
+    return dedup_keep_order(urls)
+
+
+def decode_js_string_literal(raw):
+    value = html_lib.unescape(raw or "")
+    try:
+        return json.loads(f'"{value}"')
+    except Exception:
+        try:
+            return value.encode("utf-8").decode("unicode_escape")
+        except Exception:
+            return value.replace("\\'", "'")
+
+
+def extract_fullhd_iframe_candidates(text, base_url):
+    urls = []
+
+    for raw_payload, default_lang in RE_FULLHD_VIDEO_DATA.findall(text or ""):
+        payload_text = decode_js_string_literal(raw_payload)
+        try:
+            payload = json.loads(payload_text)
+        except Exception:
+            continue
+
+        if not isinstance(payload, dict):
+            continue
+
+        videos = payload.get((default_lang or "").strip())
+        if not isinstance(videos, list):
+            videos = []
+            for value in payload.values():
+                if isinstance(value, list):
+                    videos = value
+                    break
+
+        for video in videos[:8]:
+            if not isinstance(video, dict):
+                continue
+
+            link = str(video.get("link") or "").strip()
+            template_raw = str(video.get("template") or "").strip()
+            service_slug = str(video.get("service_slug") or "").strip()
+            if not link or not template_raw:
+                continue
+
+            try:
+                template = base64.b64decode(template_raw).decode("utf-8", errors="ignore")
+            except Exception:
+                template = template_raw
+
+            rendered = template.replace("{url}", link).replace("{slug}", service_slug)
+            for raw in re.findall(r"""(?:src|data-src)=["']([^"']+)["']""", rendered, re.IGNORECASE):
+                u = normalize_url(raw, base_url)
+                if is_http_url(u):
+                    urls.append(u)
+
+            for raw in re.findall(r"https?://[^\"'<>\s]+", rendered, re.IGNORECASE):
+                u = normalize_url(raw, base_url)
+                if is_http_url(u):
+                    urls.append(u)
 
     return dedup_keep_order(urls)
 
@@ -369,18 +457,19 @@ def resolve_playerjs_embed(embed_url, upstream_headers):
 
 
 def resolve_from_page(page_url, headers, depth=0, max_depth=3):
-    html = fetch_text(page_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    html, effective_page_url = fetch_text_with_final_url(page_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
     if not html:
         return ""
+    effective_page_url = effective_page_url or page_url
 
-    cands = extract_m3u8_candidates(html, page_url)
+    cands = extract_m3u8_candidates(html, effective_page_url)
     if cands:
         return cands[0]
 
     if depth >= max_depth:
         return ""
 
-    embeds = extract_iframe_candidates(html, page_url)
+    embeds = extract_iframe_candidates(html, effective_page_url)
     for u in embeds[:8]:
         low = u.lower()
 
@@ -391,10 +480,11 @@ def resolve_from_page(page_url, headers, depth=0, max_depth=3):
                 return fast
 
         next_origin = origin_of(u)
+        current_origin = origin_of(effective_page_url)
         next_headers = {
             "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
-            "Referer": (next_origin + "/") if next_origin else headers.get("Referer", BASE_HEADERS["Referer"]),
-            "Origin": next_origin if next_origin else headers.get("Origin", BASE_HEADERS["Origin"]),
+            "Referer": effective_page_url,
+            "Origin": current_origin if current_origin else (next_origin if next_origin else headers.get("Origin", BASE_HEADERS["Origin"])),
         }
         found = resolve_from_page(u, next_headers, depth + 1, max_depth)
         if found:
@@ -415,6 +505,33 @@ def parse_episode_token(raw_bolum):
     if b_match:
         return "1", b_match.group(1)
     return "1", raw
+
+
+def slug_variants(slug):
+    value = (slug or "").strip().strip("/")
+    if not value:
+        return []
+
+    variants = [value]
+    izle_suffix = "-izle"
+    if value.endswith(izle_suffix):
+        without_suffix = value[: -len(izle_suffix)].strip("-")
+        if without_suffix:
+            variants.append(without_suffix)
+    else:
+        variants.append(value + izle_suffix)
+
+    return dedup_keep_order(variants)
+
+
+def build_fullhd_targets(slug, sezon_no, bolum_no):
+    base = FULLHD_BASE_DOMAIN
+    return [
+        f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}/",
+        f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}",
+        f"{base}/film/{slug}/",
+        f"{base}/film/{slug}",
+    ]
 
 
 def fetch_dogus_stream(landing_url):
@@ -451,7 +568,7 @@ def health():
         "ok": True,
         "version": VERSION,
         "mode": "redirect-only",
-        "resolver": "playerjs-dl-enabled",
+        "resolver": "playerjs-dl-fullhd-enabled",
         "cache_items": len(_CACHE),
         "api_key_enabled": bool(API_KEY),
     }
@@ -597,17 +714,20 @@ def stream_dizi(dizi, bolum):
     }
 
     sezon_no, bolum_no = parse_episode_token(bolum)
-    dizi_target = f"{base}/dizi/{dizi}/sezon-{sezon_no}/bolum-{bolum_no}"
-    film_target = f"{base}/film/{dizi}"
+    slug_candidates = slug_variants(dizi)
 
-    # Map varsa onu oncele, yoksa once dizi sonra film fallback dene.
+    # Map varsa onu oncele, sonra Filmhane ve FullHD slug varyasyonlarini dene.
     candidates = []
-    if dizi in films:
-        candidates.append(films[dizi])
-        candidates.append(dizi_target)
-    else:
-        candidates.append(dizi_target)
-        candidates.append(film_target)
+    for slug in slug_candidates:
+        if slug in films:
+            candidates.append(films[slug])
+
+    for slug in slug_candidates:
+        candidates.append(f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}")
+        candidates.append(f"{base}/film/{slug}")
+
+    for slug in slug_candidates:
+        candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
 
     # dedup keep order
     ordered_candidates = []
@@ -624,14 +744,8 @@ def stream_dizi(dizi, bolum):
     if cached:
         return redirect_light(cached, ttl=5)
 
-    base_origin = origin_of(base)
-    headers = {
-        "User-Agent": BASE_HEADERS["User-Agent"],
-        "Referer": f"{base}/",
-        "Origin": base_origin if base_origin else BASE_HEADERS["Origin"],
-    }
-
     for target_page in ordered_candidates:
+        headers = build_page_headers(target_page)
         stream_url = resolve_from_page(target_page, headers=headers, max_depth=3)
         if stream_url:
             cache_set(ck, stream_url, 5)
