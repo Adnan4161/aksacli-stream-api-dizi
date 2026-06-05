@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V176"
+VERSION = "V177"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -514,12 +514,23 @@ def slug_variants(slug):
 
     variants = [value]
     izle_suffix = "-izle"
+
+    numbered_izle = re.match(r"^(.+)-izle-\d+$", value, re.IGNORECASE)
+    if numbered_izle:
+        base = numbered_izle.group(1).strip("-")
+        if base:
+            variants.append(base)
+            variants.append(base + izle_suffix)
+        return dedup_keep_order(variants)
+
     if value.endswith(izle_suffix):
-        without_suffix = value[: -len(izle_suffix)].strip("-")
-        if without_suffix:
-            variants.append(without_suffix)
+        base = value[: -len(izle_suffix)].strip("-")
+        if base:
+            variants.append(base)
+            variants.append(base + "-izle-2")
     else:
         variants.append(value + izle_suffix)
+        variants.append(value + "-izle-2")
 
     return dedup_keep_order(variants)
 
@@ -531,6 +542,8 @@ def build_fullhd_targets(slug, sezon_no, bolum_no):
         f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}",
         f"{base}/film/{slug}/",
         f"{base}/film/{slug}",
+        f"{base}/{slug}/",
+        f"{base}/{slug}",
     ]
 
 
