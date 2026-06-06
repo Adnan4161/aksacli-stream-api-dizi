@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V179"
+VERSION = "V180"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -64,6 +64,8 @@ RE_FULLHD_VIDEO_DATA = re.compile(
 )
 RE_PLAYERJS_FETCH = re.compile(r"""fetch\(\s*[\"']([^\"']*?/dl\?op=get_stream[^\"']*)[\"']\s*\)""", re.IGNORECASE)
 RE_JS_COOKIE = re.compile(r"""\$\.cookie\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]*)['\"]""", re.IGNORECASE)
+RE_PLAYERJS_SUBTITLE = re.compile(r"""["']subtitle["']\s*:\s*["']([^"']+)["']""", re.IGNORECASE)
+RE_SUBTITLE_URL = re.compile(r"""(?:\[([^\]]+)\])?\s*(https?://[^\s,"'<>]+?\.(?:vtt|srt)(?:\?[^\s,"'<>]*)?)""", re.IGNORECASE)
 
 
 # HTTP session with tiny retry
@@ -199,14 +201,16 @@ def make_playback_headers(stream_url, referer_hint="", origin_hint=""):
     return headers
 
 
-def respond_stream(stream_url, playback_headers=None, ttl=SHORT_TTL):
+def respond_stream(stream_url, playback_headers=None, ttl=SHORT_TTL, subtitles=None):
     playback_headers = playback_headers or {}
+    subtitles = subtitles or []
     if wants_json():
         return {
             "ok": True,
             "mode": "json",
             "url": stream_url,
             "headers": playback_headers,
+            "subtitles": subtitles,
             "ttl": max(1, int(ttl)),
         }
     return redirect_light(stream_url, ttl=ttl)
@@ -414,7 +418,152 @@ def extract_url_from_jsonish(body, base_url=""):
     return ""
 
 
+def normalize_subtitle_language(label):
+    text = (label or "").strip().lower()
+    text = (
+        text.replace("ı", "i")
+        .replace("ğ", "g")
+        .replace("ü", "u")
+        .replace("ş", "s")
+        .replace("ö", "o")
+        .replace("ç", "c")
+    )
+    if "turk" in text or text in ("tr", "tur", "turkish"):
+        return "tr"
+    if "eng" in text or "ingiliz" in text or text in ("en", "english"):
+        return "en"
+    return ""
+
+
+def subtitle_mime_type(url):
+    low = (url or "").lower().split("?", 1)[0]
+    if low.endswith(".srt"):
+        return "application/x-subrip"
+    return "text/vtt"
+
+
+def extract_playerjs_subtitles(embed_html, embed_url=""):
+    tracks = []
+    seen = set()
+
+    for raw in RE_PLAYERJS_SUBTITLE.findall(embed_html or ""):
+        raw = html_lib.unescape(raw or "")
+        raw = raw.replace("\\/", "/").replace("\\u0026", "&").replace("&amp;", "&")
+        for label, raw_url in RE_SUBTITLE_URL.findall(raw):
+            url = normalize_url(raw_url, base_url=embed_url)
+            if not is_http_url(url) or url in seen:
+                continue
+            seen.add(url)
+            clean_label = (label or "").strip() or "Altyazi"
+            tracks.append({
+                "url": url,
+                "label": clean_label,
+                "language": normalize_subtitle_language(clean_label) or "tr",
+                "mimeType": subtitle_mime_type(url),
+            })
+
+    return tracks
+
+
+def resolve_playerjs_embed_detail(embed_url, upstream_headers):
+    embed_origin = origin_of(embed_url)
+    embed_headers = {
+        "User-Agent": upstream_headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+        "Referer": upstream_headers.get("Referer", embed_origin + "/" if embed_origin else BASE_HEADERS["Referer"]),
+        "Origin": upstream_headers.get("Origin", embed_origin if embed_origin else BASE_HEADERS["Origin"]),
+    }
+
+    embed_html = fetch_text(embed_url, embed_headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not embed_html:
+        return {}
+
+    subtitles = extract_playerjs_subtitles(embed_html, embed_url)
+
+    # direct m3u8 in embed HTML
+    direct = extract_m3u8_candidates(embed_html, embed_url)
+    if direct:
+        return {"url": direct[0], "subtitles": subtitles}
+
+    dl_url = extract_playerjs_dl_url(embed_html, embed_url)
+    if not dl_url or not is_http_url(dl_url):
+        return {}
+
+    js_cookies = extract_inline_js_cookies(embed_html)
+    c_header = cookie_header(js_cookies)
+
+    referer_candidates = [embed_url]
+    if embed_origin:
+        referer_candidates.append(embed_origin + "/")
+
+    for ref in dedup_keep_order(referer_candidates):
+        dl_headers = {
+            "User-Agent": embed_headers["User-Agent"],
+            "Referer": ref,
+            "Origin": embed_origin or embed_headers["Origin"],
+            "Accept": "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        if c_header:
+            dl_headers["Cookie"] = c_header
+
+        body = fetch_text(dl_url, dl_headers, timeout_sec=DEFAULT_TIMEOUT)
+        u = extract_url_from_jsonish(body, base_url=dl_url)
+        if u and ".m3u8" in u.lower():
+            return {"url": u, "subtitles": subtitles}
+
+    return {}
+
+
 def resolve_playerjs_embed(embed_url, upstream_headers):
+    detail = resolve_playerjs_embed_detail(embed_url, upstream_headers)
+    if detail:
+        return detail.get("url") or ""
+    return ""
+
+
+def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
+    html, effective_page_url = fetch_text_with_final_url(page_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not html:
+        return {}
+    effective_page_url = effective_page_url or page_url
+
+    cands = extract_m3u8_candidates(html, effective_page_url)
+    if cands:
+        return {"url": cands[0], "subtitles": []}
+
+    if depth >= max_depth:
+        return {}
+
+    embeds = extract_iframe_candidates(html, effective_page_url)
+    for u in embeds[:8]:
+        low = u.lower()
+
+        # playerjs style embed (filmhane source)
+        if "embed" in low or "/dl?op=get_stream" in low:
+            fast = resolve_playerjs_embed_detail(u, headers)
+            if fast.get("url"):
+                return fast
+
+        next_origin = origin_of(u)
+        current_origin = origin_of(effective_page_url)
+        next_headers = {
+            "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+            "Referer": effective_page_url,
+            "Origin": current_origin if current_origin else (next_origin if next_origin else headers.get("Origin", BASE_HEADERS["Origin"])),
+        }
+        found = resolve_from_page_detail(u, next_headers, depth + 1, max_depth)
+        if found.get("url"):
+            return found
+
+    return {}
+
+
+def resolve_from_page(page_url, headers, depth=0, max_depth=3):
+    detail = resolve_from_page_detail(page_url, headers, depth=depth, max_depth=max_depth)
+    return detail.get("url") or ""
+
+
+def resolve_playerjs_embed_legacy(embed_url, upstream_headers):
     embed_origin = origin_of(embed_url)
     embed_headers = {
         "User-Agent": upstream_headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
@@ -461,7 +610,7 @@ def resolve_playerjs_embed(embed_url, upstream_headers):
     return ""
 
 
-def resolve_from_page(page_url, headers, depth=0, max_depth=3):
+def resolve_from_page_legacy(page_url, headers, depth=0, max_depth=3):
     html, effective_page_url = fetch_text_with_final_url(page_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
     if not html:
         return ""
@@ -491,7 +640,7 @@ def resolve_from_page(page_url, headers, depth=0, max_depth=3):
             "Referer": effective_page_url,
             "Origin": current_origin if current_origin else (next_origin if next_origin else headers.get("Origin", BASE_HEADERS["Origin"])),
         }
-        found = resolve_from_page(u, next_headers, depth + 1, max_depth)
+        found = resolve_from_page_legacy(u, next_headers, depth + 1, max_depth)
         if found:
             return found
 
@@ -753,6 +902,13 @@ def resolve_universal():
     ck = f"api:{target_url}"
     cached = cache_get(ck)
     if cached:
+        if isinstance(cached, dict):
+            return respond_stream(
+                cached.get("url") or "",
+                playback_headers=cached.get("headers") or {},
+                subtitles=cached.get("subtitles") or [],
+                ttl=SHORT_TTL,
+            )
         return redirect_light(cached, ttl=SHORT_TTL)
 
     dom = origin_of(target_url)
@@ -762,15 +918,26 @@ def resolve_universal():
         "Origin": dom if dom else BASE_HEADERS["Origin"],
     }
 
-    stream_url = resolve_from_page(target_url, headers=headers, max_depth=3)
+    detail = resolve_from_page_detail(target_url, headers=headers, max_depth=3)
+    stream_url = detail.get("url") or ""
     if stream_url:
-        cache_set(ck, stream_url, NORMAL_TTL)
         playback_headers = make_playback_headers(
             stream_url=stream_url,
             referer_hint=dom + "/" if dom else "",
             origin_hint=dom
         )
-        return respond_stream(stream_url, playback_headers=playback_headers, ttl=SHORT_TTL)
+        payload = {
+            "url": stream_url,
+            "headers": playback_headers,
+            "subtitles": detail.get("subtitles") or [],
+        }
+        cache_set(ck, payload, NORMAL_TTL)
+        return respond_stream(
+            stream_url,
+            playback_headers=playback_headers,
+            subtitles=payload["subtitles"],
+            ttl=SHORT_TTL,
+        )
 
     return "Video kaynagi bulunamadi.", 404
 
@@ -880,15 +1047,33 @@ def stream_dizi(dizi, bolum):
     ck = f"yayin:{dizi}:{bolum}"
     cached = cache_get(ck)
     if cached:
+        if isinstance(cached, dict):
+            return respond_stream(
+                cached.get("url") or "",
+                playback_headers=cached.get("headers") or {},
+                subtitles=cached.get("subtitles") or [],
+                ttl=5,
+            )
         return redirect_light(cached, ttl=5)
 
     for target_page in ordered_candidates:
         headers = build_page_headers(target_page)
-        stream_url = resolve_from_page(target_page, headers=headers, max_depth=3)
+        detail = resolve_from_page_detail(target_page, headers=headers, max_depth=3)
+        stream_url = detail.get("url") or ""
         if stream_url:
-            cache_set(ck, stream_url, 5)
             playback_headers = make_playback_headers(stream_url=stream_url)
-            return respond_stream(stream_url, playback_headers=playback_headers, ttl=5)
+            payload = {
+                "url": stream_url,
+                "headers": playback_headers,
+                "subtitles": detail.get("subtitles") or [],
+            }
+            cache_set(ck, payload, 5)
+            return respond_stream(
+                stream_url,
+                playback_headers=playback_headers,
+                subtitles=payload["subtitles"],
+                ttl=5,
+            )
 
     return "Yayin bulunamadi.", 404
 
