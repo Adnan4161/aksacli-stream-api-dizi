@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V181"
+VERSION = "V182"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -238,13 +238,17 @@ def fetch_text(url, headers, timeout_sec=DEFAULT_TIMEOUT):
 def build_page_headers(page_url, referer_url=""):
     page_origin = origin_of(page_url)
     ref = referer_url or (page_origin + "/" if page_origin else BASE_HEADERS["Referer"])
-    return {
+    headers = {
         "User-Agent": BASE_HEADERS["User-Agent"],
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
         "Referer": ref,
-        "Origin": page_origin if page_origin else BASE_HEADERS["Origin"],
+        "Cache-Control": "no-cache",
     }
+    host = (urlparse(page_url).hostname or "").lower()
+    if "canlidizi" not in host:
+        headers["Origin"] = page_origin if page_origin else BASE_HEADERS["Origin"]
+    return headers
 
 
 def dedup_keep_order(items):
@@ -1030,11 +1034,7 @@ def resolve_universal():
         return redirect_light(cached, ttl=SHORT_TTL)
 
     dom = origin_of(target_url)
-    headers = {
-        "User-Agent": BASE_HEADERS["User-Agent"],
-        "Referer": (dom + "/") if dom else BASE_HEADERS["Referer"],
-        "Origin": dom if dom else BASE_HEADERS["Origin"],
-    }
+    headers = build_page_headers(target_url)
 
     detail = resolve_from_page_detail(target_url, headers=headers, max_depth=3)
     stream_url = detail.get("url") or ""
