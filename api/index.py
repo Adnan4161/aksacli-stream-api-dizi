@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V183"
+VERSION = "V184"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -30,7 +30,7 @@ BASE_HEADERS = {
 API_KEY = os.getenv("API_KEY", "").strip()
 FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.ink").rstrip("/")
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
-CANLIDIZI_BASE_DOMAIN = os.getenv("CANLIDIZI_BASE_DOMAIN", "https://www.canlidizi14.com").rstrip("/")
+HDIZIPAL_BASE_DOMAIN = os.getenv("HDIZIPAL_BASE_DOMAIN", "https://hdizipal.com").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 
 _ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
@@ -245,9 +245,7 @@ def build_page_headers(page_url, referer_url=""):
         "Referer": ref,
         "Cache-Control": "no-cache",
     }
-    host = (urlparse(page_url).hostname or "").lower()
-    if "canlidizi" not in host:
-        headers["Origin"] = page_origin if page_origin else BASE_HEADERS["Origin"]
+    headers["Origin"] = page_origin if page_origin else BASE_HEADERS["Origin"]
     return headers
 
 
@@ -315,6 +313,28 @@ def extract_iframe_candidates(text, base_url):
 
     for source in sources:
         for u in extract_fullhd_iframe_candidates(source, base_url):
+            urls.append(u)
+
+    for source in sources:
+        for u in extract_atob_iframe_candidates(source, base_url):
+            urls.append(u)
+
+    return dedup_keep_order(urls)
+
+
+def extract_atob_iframe_candidates(text, base_url):
+    urls = []
+    for raw_list in re.findall(r"""var\s+_\s*=\s*\[([^\]]+)\]""", text or "", re.IGNORECASE | re.DOTALL):
+        parts = re.findall(r"""["']([^"']+)["']""", raw_list)
+        decoded_parts = []
+        for part in parts:
+            try:
+                decoded_parts.append(base64.b64decode(part).decode("utf-8", errors="ignore"))
+            except Exception:
+                decoded_parts.append("")
+        candidate = "".join(decoded_parts).strip()
+        u = normalize_url(candidate, base_url)
+        if is_http_url(u):
             urls.append(u)
 
     return dedup_keep_order(urls)
@@ -816,21 +836,15 @@ def build_fullhd_targets(slug, sezon_no, bolum_no):
     ]
 
 
-def build_canlidizi_targets(slug, sezon_no, bolum_no):
-    base = CANLIDIZI_BASE_DOMAIN
+def build_hdizipal_targets(slug, sezon_no, bolum_no):
+    base = HDIZIPAL_BASE_DOMAIN
     clean_slug = (slug or "").strip().strip("/")
     if not clean_slug:
         return []
 
-    episode = str(bolum_no or "1").strip() or "1"
-    wp_slug_hd = f"{clean_slug}-{episode}-bolum-izle-hd"
-    wp_slug = f"{clean_slug}-{episode}-bolum-izle"
     return [
-        f"{base}/wp-json/wp/v2/posts?slug={wp_slug_hd}",
-        f"{base}/wp-json/wp/v2/posts?slug={wp_slug}",
-        f"{base}/{clean_slug}-{episode}-bolum-izle-hd.html",
-        f"{base}/{clean_slug}-{episode}-bolum-izle.html",
-        f"{base}/{clean_slug}-{episode}-bolum-hd-izle.html",
+        f"{base}/dizi/{clean_slug}/{sezon_no}-sezon/{bolum_no}-bolum",
+        f"{base}/dizi/{clean_slug}/sezon-{sezon_no}/bolum-{bolum_no}",
     ]
 
 
@@ -1150,7 +1164,7 @@ def stream_dizi(dizi, bolum):
     sezon_no, bolum_no = parse_episode_token(bolum)
     slug_candidates = slug_variants(dizi)
 
-    # Map varsa onu oncele, sonra Filmhane ve FullHD slug varyasyonlarini dene.
+    # Map varsa onu oncele, sonra Filmhane, FullHD ve HDizipal slug varyasyonlarini dene.
     candidates = []
     for slug in slug_candidates:
         if slug in films:
@@ -1164,7 +1178,7 @@ def stream_dizi(dizi, bolum):
         candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
-        candidates.extend(build_canlidizi_targets(slug, sezon_no, bolum_no))
+        candidates.extend(build_hdizipal_targets(slug, sezon_no, bolum_no))
 
     # dedup keep order
     ordered_candidates = []
