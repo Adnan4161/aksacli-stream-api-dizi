@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V185"
+VERSION = "V186"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -233,13 +233,8 @@ def stabilize_stream_url(stream_url):
         return stream_url
 
     suffix = host.split(".", 1)[1]
-    for fallback_prefix in UK_TRAFFIC_FALLBACK_PREFIXES:
-        fallback_host = f"{fallback_prefix}.{suffix}"
-        candidate = replace_url_host(stream_url, fallback_host)
-        if candidate != stream_url and probe_stream_url(candidate):
-            return candidate
-
-    return stream_url
+    fallback_host = f"{UK_TRAFFIC_FALLBACK_PREFIXES[0]}.{suffix}"
+    return replace_url_host(stream_url, fallback_host)
 
 
 def replace_url_host(stream_url, new_host):
