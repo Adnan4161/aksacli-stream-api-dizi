@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V186"
+VERSION = "V187"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -43,6 +43,7 @@ PROXY_ALLOWED_HOSTS = {
 DEFAULT_TIMEOUT = 10
 SHORT_TTL = 15
 NORMAL_TTL = 30
+STREAM_CACHE_TTL = 300
 
 FILMHANE_EDGE_DEFAULT_REFERER = "https://x.ag2m4.cfd/"
 FILMHANE_EDGE_DEFAULT_ORIGIN = "https://x.ag2m4.cfd"
@@ -899,6 +900,19 @@ def build_hdizipal_targets(slug, sezon_no, bolum_no):
     ]
 
 
+def source_order_for_yayin(slug_candidates):
+    hint = (request.args.get("src") or request.args.get("source") or "").strip().lower()
+    sources = ["filmhane", "fullhd", "hdizipal"]
+    if hint in sources:
+        return [hint] + [source for source in sources if source != hint]
+
+    primary = (slug_candidates[0] if slug_candidates else "").lower()
+    if primary.endswith("-izle"):
+        return ["hdizipal", "filmhane", "fullhd"]
+
+    return sources
+
+
 def vaplayer_embed_url(media_type, imdb_id):
     kind = "tv" if media_type == "tv" else "movie"
     return f"https://brightpathsignals.com/embed/{kind}/{imdb_id}"
@@ -1215,21 +1229,33 @@ def stream_dizi(dizi, bolum):
     sezon_no, bolum_no = parse_episode_token(bolum)
     slug_candidates = slug_variants(dizi)
 
-    # Map varsa onu oncele, sonra Filmhane, FullHD ve HDizipal slug varyasyonlarini dene.
-    candidates = []
+    # Map varsa onu oncele. Sonra kaynak sirasini slug/source ipucuna gore ayarla.
+    mapped_candidates = []
+    filmhane_candidates = []
+    fullhd_candidates = []
+    hdizipal_candidates = []
     for slug in slug_candidates:
         if slug in films:
-            candidates.append(films[slug])
+            mapped_candidates.append(films[slug])
 
     for slug in slug_candidates:
-        candidates.append(f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}")
-        candidates.append(f"{base}/film/{slug}")
+        filmhane_candidates.append(f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}")
+        filmhane_candidates.append(f"{base}/film/{slug}")
 
     for slug in slug_candidates:
-        candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
+        fullhd_candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
-        candidates.extend(build_hdizipal_targets(slug, sezon_no, bolum_no))
+        hdizipal_candidates.extend(build_hdizipal_targets(slug, sezon_no, bolum_no))
+
+    source_candidates = {
+        "filmhane": filmhane_candidates,
+        "fullhd": fullhd_candidates,
+        "hdizipal": hdizipal_candidates,
+    }
+    candidates = list(mapped_candidates)
+    for source in source_order_for_yayin(slug_candidates):
+        candidates.extend(source_candidates.get(source, []))
 
     # dedup keep order
     ordered_candidates = []
@@ -1240,7 +1266,7 @@ def stream_dizi(dizi, bolum):
         seen_candidates.add(c)
         ordered_candidates.append(c)
 
-    # token links can expire quickly -> tiny cache
+    # token links carry a long expiry, but keep the in-memory cache modest.
     ck = f"yayin:{dizi}:{bolum}"
     cached = cache_get(ck)
     if cached:
@@ -1249,9 +1275,9 @@ def stream_dizi(dizi, bolum):
                 cached.get("url") or "",
                 playback_headers=cached.get("headers") or {},
                 subtitles=cached.get("subtitles") or [],
-                ttl=5,
+                ttl=SHORT_TTL,
             )
-        return redirect_light(cached, ttl=5)
+        return redirect_light(cached, ttl=SHORT_TTL)
 
     for target_page in ordered_candidates:
         headers = build_page_headers(target_page)
@@ -1264,12 +1290,12 @@ def stream_dizi(dizi, bolum):
                 "headers": playback_headers,
                 "subtitles": detail.get("subtitles") or [],
             }
-            cache_set(ck, payload, 5)
+            cache_set(ck, payload, STREAM_CACHE_TTL)
             return respond_stream(
                 stream_url,
                 playback_headers=playback_headers,
                 subtitles=payload["subtitles"],
-                ttl=5,
+                ttl=SHORT_TTL,
             )
 
     return "Yayin bulunamadi.", 404
