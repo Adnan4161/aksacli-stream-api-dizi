@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V182"
+VERSION = "V183"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -285,20 +285,26 @@ def extract_m3u8_candidates(text, base_url):
 
 def extract_iframe_candidates(text, base_url):
     urls = []
+    sources = [text or ""]
+    decoded = html_lib.unescape(text or "")
+    decoded = decoded.replace("\\/", "/").replace('\\"', '"').replace("\\u0026", "&")
+    if decoded and decoded not in sources:
+        sources.append(decoded)
 
-    for raw in RE_IFRAME.findall(text or ""):
-        u = normalize_url(raw, base_url)
-        if is_http_url(u):
-            urls.append(u)
+    for source in sources:
+        for raw in RE_IFRAME.findall(source):
+            u = normalize_url(raw, base_url)
+            if is_http_url(u):
+                urls.append(u)
 
-    for raw in RE_DATA_EMBED.findall(text or ""):
-        u = normalize_url(raw, base_url)
-        if is_http_url(u):
-            urls.append(u)
+        for raw in RE_DATA_EMBED.findall(source):
+            u = normalize_url(raw, base_url)
+            if is_http_url(u):
+                urls.append(u)
 
     if not urls:
         try:
-            soup = BeautifulSoup(text or "", "html.parser")
+            soup = BeautifulSoup(decoded or text or "", "html.parser")
             for iframe in soup.find_all("iframe"):
                 src = iframe.get("src") or iframe.get("data-src") or ""
                 u = normalize_url(src, base_url)
@@ -307,8 +313,9 @@ def extract_iframe_candidates(text, base_url):
         except Exception:
             pass
 
-    for u in extract_fullhd_iframe_candidates(text, base_url):
-        urls.append(u)
+    for source in sources:
+        for u in extract_fullhd_iframe_candidates(source, base_url):
+            urls.append(u)
 
     return dedup_keep_order(urls)
 
@@ -816,7 +823,11 @@ def build_canlidizi_targets(slug, sezon_no, bolum_no):
         return []
 
     episode = str(bolum_no or "1").strip() or "1"
+    wp_slug_hd = f"{clean_slug}-{episode}-bolum-izle-hd"
+    wp_slug = f"{clean_slug}-{episode}-bolum-izle"
     return [
+        f"{base}/wp-json/wp/v2/posts?slug={wp_slug_hd}",
+        f"{base}/wp-json/wp/v2/posts?slug={wp_slug}",
         f"{base}/{clean_slug}-{episode}-bolum-izle-hd.html",
         f"{base}/{clean_slug}-{episode}-bolum-izle.html",
         f"{base}/{clean_slug}-{episode}-bolum-hd-izle.html",
