@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V180"
+VERSION = "V181"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -30,6 +30,7 @@ BASE_HEADERS = {
 API_KEY = os.getenv("API_KEY", "").strip()
 FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.ink").rstrip("/")
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
+CANLIDIZI_BASE_DOMAIN = os.getenv("CANLIDIZI_BASE_DOMAIN", "https://www.canlidizi14.com").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 
 _ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
@@ -65,7 +66,9 @@ RE_FULLHD_VIDEO_DATA = re.compile(
 RE_PLAYERJS_FETCH = re.compile(r"""fetch\(\s*[\"']([^\"']*?/dl\?op=get_stream[^\"']*)[\"']\s*\)""", re.IGNORECASE)
 RE_JS_COOKIE = re.compile(r"""\$\.cookie\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]*)['\"]""", re.IGNORECASE)
 RE_PLAYERJS_SUBTITLE = re.compile(r"""["']subtitle["']\s*:\s*["']([^"']+)["']""", re.IGNORECASE)
+RE_PLAYERJS_SUBTITLE_ASSIGN = re.compile(r"""playerjsSubtitle\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 RE_SUBTITLE_URL = re.compile(r"""(?:\[([^\]]+)\])?\s*(https?://[^\s,"'<>]+?\.(?:vtt|srt)(?:\?[^\s,"'<>]*)?)""", re.IGNORECASE)
+RE_ANY_SUBTITLE_URL = re.compile(r"""(?:\[([^\]]+)\])?\s*(https?://[^\s,"'<>]+)""", re.IGNORECASE)
 
 
 # HTTP session with tiny retry
@@ -446,10 +449,17 @@ def extract_playerjs_subtitles(embed_html, embed_url=""):
     tracks = []
     seen = set()
 
-    for raw in RE_PLAYERJS_SUBTITLE.findall(embed_html or ""):
+    raw_values = []
+    raw_values.extend(RE_PLAYERJS_SUBTITLE.findall(embed_html or ""))
+    raw_values.extend(RE_PLAYERJS_SUBTITLE_ASSIGN.findall(embed_html or ""))
+
+    for raw in raw_values:
         raw = html_lib.unescape(raw or "")
         raw = raw.replace("\\/", "/").replace("\\u0026", "&").replace("&amp;", "&")
-        for label, raw_url in RE_SUBTITLE_URL.findall(raw):
+        matches = RE_SUBTITLE_URL.findall(raw)
+        if not matches:
+            matches = RE_ANY_SUBTITLE_URL.findall(raw)
+        for label, raw_url in matches:
             url = normalize_url(raw_url, base_url=embed_url)
             if not is_http_url(url) or url in seen:
                 continue
@@ -463,6 +473,90 @@ def extract_playerjs_subtitles(embed_html, embed_url=""):
             })
 
     return tracks
+
+
+def is_hlszone_embed_url(url):
+    try:
+        p = urlparse(url or "")
+        host = (p.hostname or "").lower()
+        return host == "hlszone.com" and "/video/" in p.path.lower()
+    except Exception:
+        return False
+
+
+def hlszone_video_id(embed_url):
+    try:
+        path = urlparse(embed_url or "").path
+    except Exception:
+        return ""
+
+    m = re.search(r"/video/([^/?#]+)", path, re.IGNORECASE)
+    if not m:
+        return ""
+    return (m.group(1) or "").strip()
+
+
+def resolve_hlszone_embed_detail(embed_url, upstream_headers, embed_html=None):
+    video_id = hlszone_video_id(embed_url)
+    if not video_id:
+        return {}
+
+    embed_origin = origin_of(embed_url) or "https://hlszone.com"
+    embed_headers = {
+        "User-Agent": upstream_headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+        "Referer": upstream_headers.get("Referer", embed_origin + "/"),
+        "Origin": embed_origin,
+    }
+
+    html = embed_html
+    if html is None:
+        html = fetch_text(embed_url, embed_headers, timeout_sec=DEFAULT_TIMEOUT)
+
+    subtitles = extract_playerjs_subtitles(html or "", embed_url)
+
+    api_url = f"{embed_origin}/player/index.php?data={video_id}&do=getVideo"
+    parent_ref = upstream_headers.get("Referer") or embed_headers["Referer"]
+    post_headers = {
+        "User-Agent": embed_headers["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": embed_url,
+        "Origin": embed_origin,
+    }
+
+    try:
+        response = SESSION.post(
+            api_url,
+            headers=post_headers,
+            data={"hash": video_id, "r": parent_ref},
+            timeout=DEFAULT_TIMEOUT,
+            allow_redirects=True,
+        )
+        if response.status_code >= 400:
+            return {}
+        body = response.text or ""
+        payload = response.json()
+    except Exception:
+        return {}
+
+    stream_url = ""
+    if isinstance(payload, dict):
+        for key in ("securedLink", "url", "stream", "file", "videoSource"):
+            raw = payload.get(key)
+            if raw:
+                candidate = normalize_url(str(raw), base_url=api_url)
+                if is_http_url(candidate):
+                    stream_url = candidate
+                    break
+
+    if not stream_url:
+        stream_url = extract_url_from_jsonish(body, base_url=api_url)
+
+    if stream_url and ".m3u8" in stream_url.lower():
+        return {"url": stream_url, "subtitles": subtitles}
+
+    return {}
 
 
 def resolve_playerjs_embed_detail(embed_url, upstream_headers):
@@ -527,6 +621,11 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
         return {}
     effective_page_url = effective_page_url or page_url
 
+    if is_hlszone_embed_url(effective_page_url):
+        fast = resolve_hlszone_embed_detail(effective_page_url, headers, embed_html=html)
+        if fast.get("url"):
+            return fast
+
     cands = extract_m3u8_candidates(html, effective_page_url)
     if cands:
         return {"url": cands[0], "subtitles": []}
@@ -537,6 +636,11 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
     embeds = extract_iframe_candidates(html, effective_page_url)
     for u in embeds[:8]:
         low = u.lower()
+
+        if is_hlszone_embed_url(u):
+            fast = resolve_hlszone_embed_detail(u, headers)
+            if fast.get("url"):
+                return fast
 
         # playerjs style embed (filmhane source)
         if "embed" in low or "/dl?op=get_stream" in low:
@@ -698,6 +802,20 @@ def build_fullhd_targets(slug, sezon_no, bolum_no):
         f"{base}/film/{slug}",
         f"{base}/{slug}/",
         f"{base}/{slug}",
+    ]
+
+
+def build_canlidizi_targets(slug, sezon_no, bolum_no):
+    base = CANLIDIZI_BASE_DOMAIN
+    clean_slug = (slug or "").strip().strip("/")
+    if not clean_slug:
+        return []
+
+    episode = str(bolum_no or "1").strip() or "1"
+    return [
+        f"{base}/{clean_slug}-{episode}-bolum-izle-hd.html",
+        f"{base}/{clean_slug}-{episode}-bolum-izle.html",
+        f"{base}/{clean_slug}-{episode}-bolum-hd-izle.html",
     ]
 
 
@@ -1033,6 +1151,9 @@ def stream_dizi(dizi, bolum):
 
     for slug in slug_candidates:
         candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
+
+    for slug in slug_candidates:
+        candidates.extend(build_canlidizi_targets(slug, sezon_no, bolum_no))
 
     # dedup keep order
     ordered_candidates = []
