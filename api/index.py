@@ -6,7 +6,7 @@ import os
 import re
 import time
 from threading import Lock
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V184"
+VERSION = "V185"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -46,6 +46,8 @@ NORMAL_TTL = 30
 
 FILMHANE_EDGE_DEFAULT_REFERER = "https://x.ag2m4.cfd/"
 FILMHANE_EDGE_DEFAULT_ORIGIN = "https://x.ag2m4.cfd"
+UK_TRAFFIC_FALLBACK_PREFIXES = ("sn12", "u2ks", "j2mx")
+UK_TRAFFIC_BAD_PREFIXES = ("qp",)
 
 # In-memory cache (best effort)
 _CACHE = {}
@@ -207,6 +209,7 @@ def make_playback_headers(stream_url, referer_hint="", origin_hint=""):
 def respond_stream(stream_url, playback_headers=None, ttl=SHORT_TTL, subtitles=None):
     playback_headers = playback_headers or {}
     subtitles = subtitles or []
+    stream_url = stabilize_stream_url(stream_url)
     if wants_json():
         return {
             "ok": True,
@@ -217,6 +220,59 @@ def respond_stream(stream_url, playback_headers=None, ttl=SHORT_TTL, subtitles=N
             "ttl": max(1, int(ttl)),
         }
     return redirect_light(stream_url, ttl=ttl)
+
+
+def stabilize_stream_url(stream_url):
+    parsed = urlparse(stream_url or "")
+    host = (parsed.hostname or "").lower()
+    if not host or not host.endswith(".uk-traffic-076.com"):
+        return stream_url
+
+    prefix = host.split(".", 1)[0]
+    if not any(prefix.startswith(bad) for bad in UK_TRAFFIC_BAD_PREFIXES):
+        return stream_url
+
+    suffix = host.split(".", 1)[1]
+    for fallback_prefix in UK_TRAFFIC_FALLBACK_PREFIXES:
+        fallback_host = f"{fallback_prefix}.{suffix}"
+        candidate = replace_url_host(stream_url, fallback_host)
+        if candidate != stream_url and probe_stream_url(candidate):
+            return candidate
+
+    return stream_url
+
+
+def replace_url_host(stream_url, new_host):
+    parsed = urlparse(stream_url or "")
+    if not parsed.scheme or not parsed.netloc:
+        return stream_url
+    netloc = new_host
+    if parsed.port:
+        netloc = f"{new_host}:{parsed.port}"
+    return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+
+
+def probe_stream_url(stream_url):
+    try:
+        r = SESSION.get(
+            stream_url,
+            headers=make_playback_headers(stream_url),
+            timeout=4,
+            allow_redirects=True,
+            stream=True,
+        )
+        try:
+            if r.status_code != 200:
+                return False
+            content_type = (r.headers.get("content-type") or "").lower()
+            if "mpegurl" in content_type or "application/octet-stream" in content_type:
+                return True
+            sample = next(r.iter_content(chunk_size=512), b"")
+            return sample.lstrip().startswith(b"#EXTM3U")
+        finally:
+            r.close()
+    except Exception:
+        return False
 
 
 def fetch_text_with_final_url(url, headers, timeout_sec=DEFAULT_TIMEOUT):
