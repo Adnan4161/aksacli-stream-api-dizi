@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V190"
+VERSION = "V191"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -1238,18 +1238,17 @@ def build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no):
 def source_order_for_yayin(slug_candidates):
     hint = (request.args.get("src") or request.args.get("source") or "").strip().lower()
     source_aliases = {
-        "hdf": "hdfilmcehennemi",
-        "hdfilm": "hdfilmcehennemi",
-        "cehennem": "hdfilmcehennemi",
+        # hdfilmcehennemi is intentionally kept out of the automatic/native pipeline:
+        # its HLS media list points to JPEG-like segments that ExoPlayer cannot parse.
     }
     hint = source_aliases.get(hint, hint)
-    sources = ["filmhane", "fullhd", "hdizipal", "hdfilmcehennemi"]
+    sources = ["filmhane", "fullhd", "hdizipal"]
     if hint in sources:
         return [hint] + [source for source in sources if source != hint]
 
     primary = (slug_candidates[0] if slug_candidates else "").lower()
     if primary.endswith("-izle"):
-        return ["hdizipal", "filmhane", "fullhd", "hdfilmcehennemi"]
+        return ["hdizipal", "filmhane", "fullhd"]
 
     return sources
 
