@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V191"
+VERSION = "V192"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -33,6 +33,7 @@ FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.
 HDIZIPAL_BASE_DOMAIN = os.getenv("HDIZIPAL_BASE_DOMAIN", "https://hdizipal.com").rstrip("/")
 HDFILMCEHENNEMI_BASE_DOMAIN = os.getenv("HDFILMCEHENNEMI_BASE_DOMAIN", "https://www.hdfilmcehennemi.nl").rstrip("/")
 HDFILMCEHENNEMI_EMBED_DOMAIN = os.getenv("HDFILMCEHENNEMI_EMBED_DOMAIN", "https://hdfilmcehennemi.mobi").rstrip("/")
+HDFILMIZLETO_BASE_DOMAIN = os.getenv("HDFILMIZLETO_BASE_DOMAIN", "https://www.hdfilmizle.to").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 
 _ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
@@ -78,8 +79,9 @@ RE_HDFILMCEHENNEMI_DECODER = re.compile(
     r"""function\s+(dc_[A-Za-z0-9_]+).*?charCode\s*=\s*\(charCode\s*-\s*\((\d+)\s*%\s*\(i\s*\+\s*(\d+)\)\).*?var\s+(s_[A-Za-z0-9_]+)\s*=\s*\1\(\[(.*?)\]\)""",
     re.IGNORECASE | re.DOTALL,
 )
-RE_JWPLAYER_TRACKS = re.compile(r"""tracks\s*:\s*(\[[^\]]*\])""", re.IGNORECASE | re.DOTALL)
+RE_JWPLAYER_TRACKS = re.compile(r"""(?:tracks\s*:|configs\.tracks\s*=)\s*(\[[^\]]*\])""", re.IGNORECASE | re.DOTALL)
 RE_HDFILMCEHENNEMI_EMBED_ID = re.compile(r"^[A-Za-z0-9_-]{6,}$")
+RE_VIDRAME_DD = re.compile(r"""EE\.dd\(\s*["']([^"']+)["']\s*\)""", re.IGNORECASE)
 
 HDFILMCEHENNEMI_KNOWN_EMBEDS = {
     "kac-run-izle-hdf-6": "cvoodwhGycV",
@@ -593,7 +595,8 @@ def extract_jwplayer_subtitles(embed_html, embed_url=""):
             "default": bool(is_default),
         })
 
-    for raw_array in RE_JWPLAYER_TRACKS.findall(embed_html or ""):
+    source = re.sub(r"/\*.*?\*/", "", embed_html or "", flags=re.DOTALL)
+    for raw_array in RE_JWPLAYER_TRACKS.findall(source):
         try:
             payload = json.loads(raw_array)
         except Exception:
@@ -727,6 +730,39 @@ def is_hdfilmcehennemi_stream_host(url):
     )
 
 
+def is_hdfilmizleto_page_url(url):
+    try:
+        host = (urlparse(url or "").hostname or "").lower()
+    except Exception:
+        return False
+    return host == "hdfilmizle.to" or host.endswith(".hdfilmizle.to")
+
+
+def is_vidrame_embed_url(url):
+    try:
+        p = urlparse(url or "")
+        host = (p.hostname or "").lower()
+    except Exception:
+        return False
+    return host == "vidrame.pro" and "/vr/" in (p.path or "").lower()
+
+
+def is_hdfilmizleto_stream_host(url):
+    try:
+        host = (urlparse(url or "").hostname or "").lower()
+    except Exception:
+        return False
+    return host == "p1.photofunny.org" or host.endswith(".photofunny.org")
+
+
+def normalize_hdfilmizleto_media_url(url):
+    parsed = urlparse(url or "")
+    host = (parsed.hostname or "").lower()
+    if host == "p1.photofunia.pro":
+        return replace_url_host(url, "p1.photofunny.org")
+    return url
+
+
 def hdfilmcehennemi_proxy_url(target_url, referer_url):
     if not is_http_url(target_url) or not is_probable_hls_manifest_url(target_url):
         return target_url
@@ -745,11 +781,60 @@ def hdfilmcehennemi_proxy_url(target_url, referer_url):
     )
 
 
+def hdfilmizleto_proxy_url(target_url, referer_url):
+    if not is_http_url(target_url) or ".m3u8" not in (target_url or "").lower():
+        return target_url
+    if not is_hdfilmizleto_stream_host(target_url):
+        return target_url
+
+    root = request.url_root.rstrip("/") if request else ""
+    if not root:
+        return target_url
+
+    ref = (referer_url or "").strip() or "https://vidrame.pro/"
+    return (
+        f"{root}/hdfilmizleto/playlist.m3u8"
+        f"?url={quote(target_url, safe='')}"
+        f"&ref={quote(ref, safe='')}"
+    )
+
+
 def rewrite_hdfilmcehennemi_playlist(content, playlist_url, referer_url):
     def rewrite_playlist_reference(value):
         absolute = normalize_url(urljoin(playlist_url, value), playlist_url)
         if is_probable_hls_manifest_url(absolute) and is_hdfilmcehennemi_stream_host(absolute):
             return hdfilmcehennemi_proxy_url(absolute, referer_url)
+        return absolute if is_http_url(absolute) else value
+
+    out = []
+    for raw_line in (content or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            out.append(raw_line)
+            continue
+
+        if line.startswith("#"):
+            if "URI=" in line:
+                rewritten_line = re.sub(
+                    r"""URI=(["'])([^"']+)(["'])""",
+                    lambda m: f"URI={m.group(1)}{rewrite_playlist_reference(m.group(2))}{m.group(3)}",
+                    raw_line,
+                )
+                out.append(rewritten_line)
+            else:
+                out.append(raw_line)
+            continue
+
+        out.append(rewrite_playlist_reference(line))
+
+    return "\n".join(out) + "\n"
+
+
+def rewrite_hdfilmizleto_playlist(content, playlist_url, referer_url):
+    def rewrite_playlist_reference(value):
+        absolute = normalize_hdfilmizleto_media_url(normalize_url(urljoin(playlist_url, value), playlist_url))
+        if is_http_url(absolute) and ".m3u8" in absolute.lower() and is_hdfilmizleto_stream_host(absolute):
+            return hdfilmizleto_proxy_url(absolute, referer_url)
         return absolute if is_http_url(absolute) else value
 
     out = []
@@ -787,6 +872,67 @@ def rot13_text(value):
         else:
             out.append(ch)
     return "".join(out)
+
+
+def decode_vidrame_stream_url(embed_html):
+    m = RE_VIDRAME_DD.search(embed_html or "")
+    if not m:
+        return ""
+
+    encoded = (m.group(1) or "").replace("-", "+").replace("_", "/")
+    encoded += "=" * ((4 - len(encoded) % 4) % 4)
+    try:
+        raw = base64.b64decode(encoded).decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+    stream_url = normalize_url(rot13_text(raw)[::-1], "")
+    stream_url = normalize_hdfilmizleto_media_url(stream_url)
+    return stream_url if is_http_url(stream_url) else ""
+
+
+def fix_hdfilmizleto_subtitles(subtitles):
+    fixed = []
+    for track in subtitles or []:
+        if not isinstance(track, dict):
+            continue
+        item = dict(track)
+        item["url"] = normalize_hdfilmizleto_media_url(item.get("url") or "")
+        label_url = f"{item.get('label') or ''} {item.get('url') or ''}".lower()
+        if "english" in label_url or "ingiliz" in label_url:
+            item["language"] = "en"
+        elif "turkish" in label_url or "forced" in label_url or "turk" in label_url:
+            item["language"] = "tr"
+        if item.get("url"):
+            fixed.append(item)
+    return fixed
+
+
+def resolve_vidrame_embed_detail(embed_url, upstream_headers, embed_html=""):
+    embed_origin = origin_of(embed_url) or "https://vidrame.pro"
+    headers = {
+        "User-Agent": upstream_headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+        "Referer": upstream_headers.get("Referer", HDFILMIZLETO_BASE_DOMAIN + "/"),
+        "Origin": upstream_headers.get("Origin", embed_origin),
+    }
+
+    html = embed_html or fetch_text(embed_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not html:
+        return {}
+
+    stream_url = decode_vidrame_stream_url(html)
+    if not stream_url:
+        cands = extract_m3u8_candidates(html, embed_url)
+        stream_url = normalize_hdfilmizleto_media_url(cands[0]) if cands else ""
+    if not stream_url:
+        return {}
+
+    subtitles = fix_hdfilmizleto_subtitles(extract_jwplayer_subtitles(html, embed_url))
+    return {
+        "url": hdfilmizleto_proxy_url(stream_url, embed_url),
+        "headers": {},
+        "subtitles": subtitles,
+    }
 
 
 def decode_hdfilmcehennemi_stream_url(embed_html):
@@ -1017,6 +1163,11 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
         if fast.get("url"):
             return fast
 
+    if is_vidrame_embed_url(effective_page_url):
+        fast = resolve_vidrame_embed_detail(effective_page_url, headers, embed_html=html)
+        if fast.get("url"):
+            return fast
+
     cands = extract_m3u8_candidates(html, effective_page_url)
     if cands:
         return {"url": cands[0], "subtitles": []}
@@ -1035,6 +1186,15 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
 
         if is_hdfilmcehennemi_embed_url(u):
             fast = resolve_hdfilmcehennemi_embed_detail(u, headers)
+            if fast.get("url"):
+                return fast
+
+        if is_vidrame_embed_url(u):
+            fast = resolve_vidrame_embed_detail(u, {
+                "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+                "Referer": effective_page_url,
+                "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
+            })
             if fast.get("url"):
                 return fast
 
@@ -1235,20 +1395,47 @@ def build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no):
     return targets
 
 
+def build_hdfilmizleto_targets(slug, sezon_no, bolum_no):
+    base = HDFILMIZLETO_BASE_DOMAIN
+    clean_slug = (slug or "").strip().strip("/")
+    if not clean_slug:
+        return []
+
+    variants = [clean_slug]
+    if not clean_slug.endswith("-izle"):
+        variants.append(clean_slug + "-izle")
+    if not clean_slug.endswith("-izle-hd-izle"):
+        variants.append(clean_slug + "-izle-hd-izle")
+    if not clean_slug.endswith("-hd-izle"):
+        variants.append(clean_slug + "-hd-izle")
+
+    targets = []
+    for variant in dedup_keep_order(variants):
+        targets.append(f"{base}/{variant}/")
+        targets.append(f"{base}/{variant}")
+        targets.append(f"{base}/dizi/{variant}/sezon-{sezon_no}/bolum-{bolum_no}/")
+        targets.append(f"{base}/dizi/{variant}/sezon-{sezon_no}/bolum-{bolum_no}")
+    return targets
+
+
 def source_order_for_yayin(slug_candidates):
     hint = (request.args.get("src") or request.args.get("source") or "").strip().lower()
     source_aliases = {
         # hdfilmcehennemi is intentionally kept out of the automatic/native pipeline:
         # its HLS media list points to JPEG-like segments that ExoPlayer cannot parse.
+        "hdfilmizle": "hdfilmizleto",
+        "hdfilmizle.to": "hdfilmizleto",
     }
     hint = source_aliases.get(hint, hint)
-    sources = ["filmhane", "fullhd", "hdizipal"]
+    sources = ["filmhane", "fullhd", "hdizipal", "hdfilmizleto"]
     if hint in sources:
         return [hint] + [source for source in sources if source != hint]
 
     primary = (slug_candidates[0] if slug_candidates else "").lower()
+    if "hd-izle" in primary:
+        return ["hdfilmizleto", "filmhane", "fullhd", "hdizipal"]
     if primary.endswith("-izle"):
-        return ["hdizipal", "filmhane", "fullhd"]
+        return ["hdizipal", "filmhane", "fullhd", "hdfilmizleto"]
 
     return sources
 
@@ -1403,6 +1590,54 @@ def proxy_hdfilmcehennemi_playlist():
 
     final_url = response.url or target_url
     rewritten = rewrite_hdfilmcehennemi_playlist(body, final_url, referer_url)
+    return Response(
+        rewritten,
+        status=200,
+        headers={
+            "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=0, s-maxage=15, stale-while-revalidate=60",
+        },
+    )
+
+
+@app.route("/hdfilmizleto/playlist.m3u8", methods=["GET", "HEAD"])
+def proxy_hdfilmizleto_playlist():
+    target_url = unquote((request.args.get("url") or "").strip())
+    referer_url = unquote((request.args.get("ref") or "").strip())
+    if not is_http_url(target_url):
+        return "Gecersiz URL", 400
+    if ".m3u8" not in target_url.lower() or not is_hdfilmizleto_stream_host(target_url):
+        return "Kaynak desteklenmiyor.", 400
+
+    embed_origin = origin_of(referer_url) or "https://vidrame.pro"
+    headers = {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+        "Accept": "application/vnd.apple.mpegurl, application/x-mpegURL, */*",
+        "Referer": referer_url or (embed_origin + "/"),
+        "Origin": embed_origin,
+    }
+
+    try:
+        response = SESSION.get(
+            target_url,
+            headers=headers,
+            timeout=DEFAULT_TIMEOUT,
+            allow_redirects=True,
+        )
+    except Exception:
+        return "Playlist alinamadi.", 502
+
+    if response.status_code >= 400:
+        return "Playlist bulunamadi.", response.status_code
+
+    response.encoding = response.encoding or "utf-8"
+    body = response.text or ""
+    if not body.lstrip().startswith("#EXTM3U"):
+        return "Gecersiz playlist.", 502
+
+    final_url = response.url or target_url
+    rewritten = rewrite_hdfilmizleto_playlist(body, final_url, referer_url)
     return Response(
         rewritten,
         status=200,
@@ -1623,6 +1858,7 @@ def stream_dizi(dizi, bolum):
     fullhd_candidates = []
     hdizipal_candidates = []
     hdfilmcehennemi_candidates = []
+    hdfilmizleto_candidates = []
     for slug in slug_candidates:
         if slug in films:
             mapped_candidates.append(films[slug])
@@ -1640,11 +1876,15 @@ def stream_dizi(dizi, bolum):
     for slug in slug_candidates:
         hdfilmcehennemi_candidates.extend(build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no))
 
+    for slug in slug_candidates:
+        hdfilmizleto_candidates.extend(build_hdfilmizleto_targets(slug, sezon_no, bolum_no))
+
     source_candidates = {
         "filmhane": filmhane_candidates,
         "fullhd": fullhd_candidates,
         "hdizipal": hdizipal_candidates,
         "hdfilmcehennemi": hdfilmcehennemi_candidates,
+        "hdfilmizleto": hdfilmizleto_candidates,
     }
     candidates = list(mapped_candidates)
     for source in source_order_for_yayin(slug_candidates):
