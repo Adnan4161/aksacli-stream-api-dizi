@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V196"
+VERSION = "V197"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -238,15 +238,33 @@ def respond_stream(stream_url, playback_headers=None, ttl=SHORT_TTL, subtitles=N
     subtitles = subtitles or []
     stream_url = stabilize_stream_url(stream_url)
     if wants_json():
+        client_url = client_playback_url(stream_url)
         return {
             "ok": True,
             "mode": "json",
-            "url": stream_url,
+            "url": client_url,
+            "mimeType": "application/x-mpegURL" if client_url != stream_url else "",
             "headers": playback_headers,
             "subtitles": subtitles,
             "ttl": max(1, int(ttl)),
         }
     return redirect_light(stream_url, ttl=ttl)
+
+
+def client_playback_url(stream_url):
+    if not is_fullhdfilmizlesene_stream_host(stream_url):
+        return stream_url
+
+    lower = (stream_url or "").lower()
+    if ".m3u8" in lower or "ext=m3u8" in lower or "format=m3u8" in lower or "type=m3u8" in lower:
+        return stream_url
+
+    parsed = urlparse(stream_url)
+    fragment = parsed.fragment or ""
+    if "ext=m3u8" in fragment.lower():
+        return stream_url
+    new_fragment = f"{fragment}&ext=m3u8" if fragment else "ext=m3u8"
+    return urlunparse(parsed._replace(fragment=new_fragment))
 
 
 def stabilize_stream_url(stream_url):
