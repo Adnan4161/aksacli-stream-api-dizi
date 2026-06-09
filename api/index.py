@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V197"
+VERSION = "V198"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -87,6 +87,7 @@ RE_HDFILMCEHENNEMI_EMBED_ID = re.compile(r"^[A-Za-z0-9_-]{6,}$")
 RE_VIDRAME_DD = re.compile(r"""EE\.dd\(\s*["']([^"']+)["']\s*\)""", re.IGNORECASE)
 RE_FULLHDFILMIZLESENE_SCX = re.compile(r"""var\s+scx\s*=\s*(\{.*?\})\s*;""", re.IGNORECASE | re.DOTALL)
 RE_RAPIDVID_AV_FILE = re.compile(r"""["']file["']\s*:\s*av\(\s*["']([^"']+)["']\s*\)""", re.IGNORECASE | re.DOTALL)
+RE_PLAYER_CONFIGS = re.compile(r"""playerConfigs\s*=\s*(\{.*?\})\s*;""", re.IGNORECASE | re.DOTALL)
 
 HDFILMCEHENNEMI_KNOWN_EMBEDS = {
     "kac-run-izle-hdf-6": "cvoodwhGycV",
@@ -329,6 +330,17 @@ def fetch_text_with_final_url(url, headers, timeout_sec=DEFAULT_TIMEOUT):
 def fetch_text(url, headers, timeout_sec=DEFAULT_TIMEOUT):
     text, _ = fetch_text_with_final_url(url, headers, timeout_sec=timeout_sec)
     return text
+
+
+def post_text(url, headers, timeout_sec=DEFAULT_TIMEOUT):
+    try:
+        r = SESSION.post(url, headers=headers, data="", timeout=timeout_sec, allow_redirects=True)
+        if r.status_code >= 400:
+            return ""
+        r.encoding = r.encoding or "utf-8"
+        return r.text or ""
+    except Exception:
+        return ""
 
 
 def build_page_headers(page_url, referer_url=""):
@@ -821,6 +833,17 @@ def is_rapidvid_embed_url(url):
     return host == "rapidvid.net" and "/vod/" in path
 
 
+def is_sobreatsesuyp_embed_url(url):
+    try:
+        p = urlparse(url or "")
+        host = (p.hostname or "").lower()
+        path = (p.path or "").lower()
+    except Exception:
+        return False
+
+    return host.endswith("sobreatsesuyp.com") and "/iframe" in path
+
+
 def rapidvid_embed_url(video_id):
     clean_id = (video_id or "").strip().strip("/")
     if not clean_id:
@@ -1141,6 +1164,112 @@ def resolve_rapidvid_embed_detail(embed_url, upstream_headers, embed_html=None):
     }
 
 
+def parse_player_configs(embed_html):
+    m = RE_PLAYER_CONFIGS.search(embed_html or "")
+    if not m:
+        return {}
+    raw = (m.group(1) or "").replace("\\/", "/")
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def sorted_sobreat_playlist_items(items):
+    if not isinstance(items, list):
+        return []
+
+    normalized = [item for item in items if isinstance(item, dict) and str(item.get("file") or "").strip()]
+
+    def rank(item):
+        title = str(item.get("title") or "").lower()
+        if "dublaj" in title or "turkce" in title or "türkçe" in title:
+            return 0
+        if "altyaz" in title or "sub" in title:
+            return 1
+        return 2
+
+    return sorted(normalized, key=rank)
+
+
+def sobreat_playlist_url(file_value, embed_url):
+    value = str(file_value or "").strip()
+    if not value:
+        return ""
+    if value.startswith("~") or value.startswith("#"):
+        value = value[1:]
+    if value.startswith("http://") or value.startswith("https://"):
+        return value
+    return normalize_url(f"/playlist/{value}.txt", embed_url)
+
+
+def resolve_sobreatsesuyp_embed_detail(embed_url, upstream_headers, embed_html=None):
+    embed_origin = origin_of(embed_url) or "https://sobreatsesuyp.com"
+    referer = upstream_headers.get("Referer") or FULLHDFILMIZLESENE_BASE_DOMAIN + "/"
+    headers = {
+        "User-Agent": upstream_headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+        "Accept": upstream_headers.get("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+        "Accept-Language": upstream_headers.get("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"),
+        "Referer": referer,
+        "Origin": origin_of(referer) or FULLHDFILMIZLESENE_BASE_DOMAIN,
+        "Cache-Control": "no-cache",
+    }
+
+    html = embed_html
+    if html is None:
+        html = fetch_text(embed_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not html:
+        return {}
+
+    config = parse_player_configs(html)
+    playlist_file = str(config.get("file") or "").strip()
+    csrf_token = str(config.get("key") or "").strip()
+    if not playlist_file:
+        return {}
+
+    playlist_url = normalize_url(playlist_file, embed_url)
+    playlist_headers = {
+        "User-Agent": headers["User-Agent"],
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": embed_url,
+        "Origin": embed_origin,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Cache-Control": "no-cache",
+    }
+    if csrf_token:
+        playlist_headers["X-CSRF-TOKEN"] = csrf_token
+
+    playlist_text = fetch_text(playlist_url, headers=playlist_headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not playlist_text:
+        return {}
+
+    try:
+        playlist_payload = json.loads(playlist_text)
+    except Exception:
+        playlist_payload = []
+
+    for item in sorted_sobreat_playlist_items(playlist_payload):
+        stream_lookup = sobreat_playlist_url(item.get("file"), embed_url)
+        if not stream_lookup:
+            continue
+
+        body = post_text(stream_lookup, headers=playlist_headers, timeout_sec=DEFAULT_TIMEOUT)
+        stream_url = extract_url_from_jsonish(body, base_url=stream_lookup)
+        if not stream_url and body.strip().startswith(("http://", "https://")):
+            stream_url = normalize_url(body.strip(), stream_lookup)
+        if not stream_url:
+            continue
+
+        return {
+            "url": stream_url,
+            "headers": make_playback_headers(stream_url, referer_hint=embed_url, origin_hint=embed_origin),
+            "subtitles": [],
+        }
+
+    return {}
+
+
 def resolve_vidrame_embed_detail(embed_url, upstream_headers, embed_html=""):
     embed_origin = origin_of(embed_url) or "https://vidrame.pro"
     headers = {
@@ -1448,6 +1577,11 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
         if fast.get("url"):
             return fast
 
+    if is_sobreatsesuyp_embed_url(effective_page_url):
+        fast = resolve_sobreatsesuyp_embed_detail(effective_page_url, headers, embed_html=html)
+        if fast.get("url"):
+            return fast
+
     cands = extract_m3u8_candidates(html, effective_page_url)
     if cands:
         return {"url": cands[0], "subtitles": []}
@@ -1489,6 +1623,15 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
 
         if is_rapidvid_embed_url(u):
             fast = resolve_rapidvid_embed_detail(u, {
+                "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+                "Referer": effective_page_url,
+                "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
+            })
+            if fast.get("url"):
+                return fast
+
+        if is_sobreatsesuyp_embed_url(u):
+            fast = resolve_sobreatsesuyp_embed_detail(u, {
                 "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
                 "Referer": effective_page_url,
                 "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
@@ -1773,19 +1916,19 @@ def source_order_for_yayin(slug_candidates):
     sources = ["filmhane", "fullhd", "hdizipal"]
     optional_sources = ["hdfilmizleto", "filmmakinesi", "fullhdfilmizlesene"]
     if hint in sources + optional_sources:
-        return [hint] + [source for source in sources if source != hint]
+        return [hint] + [source for source in sources + optional_sources if source != hint]
 
     primary = (slug_candidates[0] if slug_candidates else "").lower()
     if fullhdfilmizlesene_rapidvid_id_for_slug(primary):
-        return ["fullhdfilmizlesene"] + sources
+        return ["fullhdfilmizlesene"] + sources + [source for source in optional_sources if source != "fullhdfilmizlesene"]
 
     if re.search(r"-fm\d+$", primary):
-        return ["filmmakinesi"] + sources
+        return ["filmmakinesi"] + sources + [source for source in optional_sources if source != "filmmakinesi"]
 
     if primary.endswith("-izle"):
-        return ["hdizipal", "filmhane", "fullhd"]
+        return ["hdizipal", "filmhane", "fullhd"] + optional_sources
 
-    return sources
+    return sources + optional_sources
 
 
 def vaplayer_embed_url(media_type, imdb_id):
