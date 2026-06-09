@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V198"
+VERSION = "V199"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -341,6 +341,13 @@ def post_text(url, headers, timeout_sec=DEFAULT_TIMEOUT):
         return r.text or ""
     except Exception:
         return ""
+
+
+def fetch_or_post_text(url, headers, timeout_sec=DEFAULT_TIMEOUT):
+    text = fetch_text(url, headers=headers, timeout_sec=timeout_sec)
+    if text:
+        return text
+    return post_text(url, headers=headers, timeout_sec=timeout_sec)
 
 
 def build_page_headers(page_url, referer_url=""):
@@ -1254,7 +1261,7 @@ def resolve_sobreatsesuyp_embed_detail(embed_url, upstream_headers, embed_html=N
         if not stream_lookup:
             continue
 
-        body = post_text(stream_lookup, headers=playlist_headers, timeout_sec=DEFAULT_TIMEOUT)
+        body = fetch_or_post_text(stream_lookup, headers=playlist_headers, timeout_sec=DEFAULT_TIMEOUT)
         stream_url = extract_url_from_jsonish(body, base_url=stream_lookup)
         if not stream_url and body.strip().startswith(("http://", "https://")):
             stream_url = normalize_url(body.strip(), stream_lookup)
