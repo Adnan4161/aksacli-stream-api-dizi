@@ -6,7 +6,7 @@ import os
 import re
 import time
 from threading import Lock
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import quote, unquote, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V189"
+VERSION = "V190"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -715,6 +715,67 @@ def is_probable_hls_manifest_url(url):
     return False
 
 
+def is_hdfilmcehennemi_stream_host(url):
+    try:
+        host = (urlparse(url or "").hostname or "").lower()
+    except Exception:
+        return False
+    return (
+        host.endswith(".cdnimages2500.shop")
+        or re.match(r"^srv\d+\.cdnimages\d+\.shop$", host) is not None
+        or host.endswith(".playmix.uno")
+    )
+
+
+def hdfilmcehennemi_proxy_url(target_url, referer_url):
+    if not is_http_url(target_url) or not is_probable_hls_manifest_url(target_url):
+        return target_url
+    if not is_hdfilmcehennemi_stream_host(target_url):
+        return target_url
+
+    root = request.url_root.rstrip("/") if request else ""
+    if not root:
+        return target_url
+
+    ref = (referer_url or "").strip() or (HDFILMCEHENNEMI_EMBED_DOMAIN + "/")
+    return (
+        f"{root}/hdf/playlist"
+        f"?url={quote(target_url, safe='')}"
+        f"&ref={quote(ref, safe='')}"
+    )
+
+
+def rewrite_hdfilmcehennemi_playlist(content, playlist_url, referer_url):
+    def rewrite_playlist_reference(value):
+        absolute = normalize_url(urljoin(playlist_url, value), playlist_url)
+        if is_probable_hls_manifest_url(absolute) and is_hdfilmcehennemi_stream_host(absolute):
+            return hdfilmcehennemi_proxy_url(absolute, referer_url)
+        return absolute if is_http_url(absolute) else value
+
+    out = []
+    for raw_line in (content or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            out.append(raw_line)
+            continue
+
+        if line.startswith("#"):
+            if "URI=" in line:
+                rewritten_line = re.sub(
+                    r"""URI=(["'])([^"']+)(["'])""",
+                    lambda m: f"URI={m.group(1)}{rewrite_playlist_reference(m.group(2))}{m.group(3)}",
+                    raw_line,
+                )
+                out.append(rewritten_line)
+            else:
+                out.append(raw_line)
+            continue
+
+        out.append(rewrite_playlist_reference(line))
+
+    return "\n".join(out) + "\n"
+
+
 def rot13_text(value):
     out = []
     for ch in value or "":
@@ -794,8 +855,9 @@ def resolve_hdfilmcehennemi_embed_detail(embed_url, upstream_headers, embed_html
         stream_url = extract_hdfilmcehennemi_content_url(html, embed_url)
 
     if stream_url and is_probable_hls_manifest_url(stream_url):
+        playback_url = hdfilmcehennemi_proxy_url(stream_url, embed_url)
         return {
-            "url": stream_url,
+            "url": playback_url,
             "headers": make_playback_headers(stream_url, referer_hint=embed_url, origin_hint=embed_origin),
             "subtitles": subtitles,
         }
@@ -1303,6 +1365,54 @@ def health():
         "cache_items": len(_CACHE),
         "api_key_enabled": bool(API_KEY),
     }
+
+
+@app.route("/hdf/playlist", methods=["GET", "HEAD"])
+def proxy_hdfilmcehennemi_playlist():
+    target_url = unquote((request.args.get("url") or "").strip())
+    referer_url = unquote((request.args.get("ref") or "").strip())
+    if not is_http_url(target_url):
+        return "Gecersiz URL", 400
+    if not is_probable_hls_manifest_url(target_url) or not is_hdfilmcehennemi_stream_host(target_url):
+        return "Kaynak desteklenmiyor.", 400
+
+    embed_origin = origin_of(referer_url) or HDFILMCEHENNEMI_EMBED_DOMAIN
+    headers = {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+        "Accept": "application/vnd.apple.mpegurl, application/x-mpegURL, */*",
+        "Referer": referer_url or (embed_origin + "/"),
+        "Origin": embed_origin,
+    }
+
+    try:
+        response = SESSION.get(
+            target_url,
+            headers=headers,
+            timeout=DEFAULT_TIMEOUT,
+            allow_redirects=True,
+        )
+    except Exception:
+        return "Playlist alinamadi.", 502
+
+    if response.status_code >= 400:
+        return "Playlist bulunamadi.", response.status_code
+
+    response.encoding = response.encoding or "utf-8"
+    body = response.text or ""
+    if not body.lstrip().startswith("#EXTM3U"):
+        return "Gecersiz playlist.", 502
+
+    final_url = response.url or target_url
+    rewritten = rewrite_hdfilmcehennemi_playlist(body, final_url, referer_url)
+    return Response(
+        rewritten,
+        status=200,
+        headers={
+            "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=0, s-maxage=15, stale-while-revalidate=60",
+        },
+    )
 
 
 @app.route("/canli/proxy", methods=["GET", "HEAD"])
