@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V188"
+VERSION = "V189"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -32,6 +32,7 @@ FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.ink")
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
 HDIZIPAL_BASE_DOMAIN = os.getenv("HDIZIPAL_BASE_DOMAIN", "https://hdizipal.com").rstrip("/")
 HDFILMCEHENNEMI_BASE_DOMAIN = os.getenv("HDFILMCEHENNEMI_BASE_DOMAIN", "https://www.hdfilmcehennemi.nl").rstrip("/")
+HDFILMCEHENNEMI_EMBED_DOMAIN = os.getenv("HDFILMCEHENNEMI_EMBED_DOMAIN", "https://hdfilmcehennemi.mobi").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 
 _ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
@@ -78,6 +79,13 @@ RE_HDFILMCEHENNEMI_DECODER = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 RE_JWPLAYER_TRACKS = re.compile(r"""tracks\s*:\s*(\[[^\]]*\])""", re.IGNORECASE | re.DOTALL)
+RE_HDFILMCEHENNEMI_EMBED_ID = re.compile(r"^[A-Za-z0-9_-]{6,}$")
+
+HDFILMCEHENNEMI_KNOWN_EMBEDS = {
+    "kac-run-izle-hdf-6": "cvoodwhGycV",
+    "kac-run-izle": "cvoodwhGycV",
+    "kac-run": "cvoodwhGycV",
+}
 
 
 # HTTP session with tiny retry
@@ -653,6 +661,51 @@ def is_hdfilmcehennemi_embed_url(url):
         return False
 
 
+def hdfilmcehennemi_embed_url(embed_id):
+    clean_id = (embed_id or "").strip().strip("/")
+    if not clean_id:
+        return ""
+    return f"{HDFILMCEHENNEMI_EMBED_DOMAIN}/video/embed/{clean_id}/"
+
+
+def hdfilmcehennemi_embed_id_for_slug(slug):
+    clean_slug = (slug or "").strip().strip("/")
+    if not clean_slug:
+        return ""
+
+    mapped = HDFILMCEHENNEMI_KNOWN_EMBEDS.get(clean_slug.lower())
+    if mapped:
+        return mapped
+
+    for prefix in ("hdf-", "hdfc-", "hdfilm-", "hdfilmcehennemi-"):
+        if clean_slug.lower().startswith(prefix):
+            candidate = clean_slug[len(prefix):].strip("-/")
+            if RE_HDFILMCEHENNEMI_EMBED_ID.match(candidate):
+                return candidate
+
+    return ""
+
+
+def hdfilmcehennemi_slug_from_url(page_url):
+    try:
+        p = urlparse(page_url or "")
+    except Exception:
+        return ""
+
+    host = (p.hostname or "").lower()
+    if "hdfilmcehennemi" not in host:
+        return ""
+
+    parts = [part for part in p.path.strip("/").split("/") if part]
+    if not parts:
+        return ""
+
+    if parts[0].lower() == "dizi" and len(parts) > 1:
+        return parts[1]
+
+    return parts[0]
+
+
 def is_probable_hls_manifest_url(url):
     low = (url or "").lower().split("?", 1)[0]
     if ".m3u8" in low:
@@ -748,6 +801,19 @@ def resolve_hdfilmcehennemi_embed_detail(embed_url, upstream_headers, embed_html
         }
 
     return {}
+
+
+def resolve_hdfilmcehennemi_known_embed_detail(page_url, upstream_headers):
+    slug = hdfilmcehennemi_slug_from_url(page_url)
+    embed_id = hdfilmcehennemi_embed_id_for_slug(slug)
+    if not embed_id:
+        return {}
+
+    embed_url = hdfilmcehennemi_embed_url(embed_id)
+    if not embed_url:
+        return {}
+
+    return resolve_hdfilmcehennemi_embed_detail(embed_url, upstream_headers)
 
 
 def resolve_hlszone_embed_detail(embed_url, upstream_headers, embed_html=None):
@@ -870,6 +936,10 @@ def resolve_playerjs_embed(embed_url, upstream_headers):
 
 
 def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
+    hdf_known = resolve_hdfilmcehennemi_known_embed_detail(page_url, headers)
+    if hdf_known.get("url"):
+        return hdf_known
+
     html, effective_page_url = fetch_text_with_final_url(page_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
     if not html:
         return {}
@@ -1087,12 +1157,20 @@ def build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no):
     if not clean_slug:
         return []
 
-    return [
+    targets = []
+    embed_id = hdfilmcehennemi_embed_id_for_slug(clean_slug)
+    if embed_id:
+        direct_embed = hdfilmcehennemi_embed_url(embed_id)
+        if direct_embed:
+            targets.append(direct_embed)
+
+    targets.extend([
         f"{base}/{clean_slug}/",
         f"{base}/{clean_slug}",
         f"{base}/dizi/{clean_slug}/sezon-{sezon_no}/bolum-{bolum_no}/",
         f"{base}/dizi/{clean_slug}/sezon-{sezon_no}/bolum-{bolum_no}",
-    ]
+    ])
+    return targets
 
 
 def source_order_for_yayin(slug_candidates):
