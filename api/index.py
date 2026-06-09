@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V194"
+VERSION = "V195"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -35,6 +35,7 @@ HDFILMCEHENNEMI_BASE_DOMAIN = os.getenv("HDFILMCEHENNEMI_BASE_DOMAIN", "https://
 HDFILMCEHENNEMI_EMBED_DOMAIN = os.getenv("HDFILMCEHENNEMI_EMBED_DOMAIN", "https://hdfilmcehennemi.mobi").rstrip("/")
 HDFILMIZLETO_BASE_DOMAIN = os.getenv("HDFILMIZLETO_BASE_DOMAIN", "https://www.hdfilmizle.to").rstrip("/")
 FILMMAKINESI_BASE_DOMAIN = os.getenv("FILMMAKINESI_BASE_DOMAIN", "https://filmmakinesi.to").rstrip("/")
+FULLHDFILMIZLESENE_BASE_DOMAIN = os.getenv("FULLHDFILMIZLESENE_BASE_DOMAIN", "https://www.fullhdfilmizlesene.life").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 
 _ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
@@ -81,9 +82,11 @@ RE_HDFILMCEHENNEMI_DECODER = re.compile(
     r"""function\s+(dc_[A-Za-z0-9_]+).*?charCode\s*=\s*\(charCode\s*-\s*\((\d+)\s*%\s*\(i\s*\+\s*(\d+)\)\).*?var\s+(s_[A-Za-z0-9_]+)\s*=\s*\1\(\[(.*?)\]\)""",
     re.IGNORECASE | re.DOTALL,
 )
-RE_JWPLAYER_TRACKS = re.compile(r"""(?:tracks\s*:|configs\.tracks\s*=)\s*(\[[^\]]*\])""", re.IGNORECASE | re.DOTALL)
+RE_JWPLAYER_TRACKS = re.compile(r"""(?:tracks\s*:|configs\.tracks\s*=|jwSetup\.tracks\s*=)\s*(\[[^\]]*\])""", re.IGNORECASE | re.DOTALL)
 RE_HDFILMCEHENNEMI_EMBED_ID = re.compile(r"^[A-Za-z0-9_-]{6,}$")
 RE_VIDRAME_DD = re.compile(r"""EE\.dd\(\s*["']([^"']+)["']\s*\)""", re.IGNORECASE)
+RE_FULLHDFILMIZLESENE_SCX = re.compile(r"""var\s+scx\s*=\s*(\{.*?\})\s*;""", re.IGNORECASE | re.DOTALL)
+RE_RAPIDVID_AV_FILE = re.compile(r"""["']file["']\s*:\s*av\(\s*["']([^"']+)["']\s*\)""", re.IGNORECASE | re.DOTALL)
 
 HDFILMCEHENNEMI_KNOWN_EMBEDS = {
     "kac-run-izle-hdf-6": "cvoodwhGycV",
@@ -394,6 +397,10 @@ def extract_iframe_candidates(text, base_url):
         for u in extract_atob_iframe_candidates(source, base_url):
             urls.append(u)
 
+    for source in sources:
+        for u in extract_fullhdfilmizlesene_iframe_candidates(source, base_url):
+            urls.append(u)
+
     return dedup_keep_order(urls)
 
 
@@ -411,6 +418,94 @@ def extract_atob_iframe_candidates(text, base_url):
         u = normalize_url(candidate, base_url)
         if is_http_url(u):
             urls.append(u)
+
+    return dedup_keep_order(urls)
+
+
+def decode_base64_text(value, encoding="utf-8"):
+    text = (value or "").strip().replace("-", "+").replace("_", "/")
+    if not text:
+        return ""
+    text += "=" * ((4 - len(text) % 4) % 4)
+    try:
+        return base64.b64decode(text).decode(encoding, errors="ignore")
+    except Exception:
+        return ""
+
+
+def decode_fullhdfilmizlesene_scx_value(value):
+    return decode_base64_text(rot13_text(value or ""))
+
+
+def decode_rapidvid_av_value(value):
+    raw = decode_base64_text((value or "")[::-1], encoding="latin-1")
+    if not raw:
+        return ""
+
+    key = "K9L"
+    mixed = []
+    for idx, ch in enumerate(raw):
+        mixed.append(chr(ord(ch) - ((ord(key[idx % len(key)]) % 5) + 1)))
+
+    return decode_base64_text("".join(mixed))
+
+
+def iter_scx_values(bucket):
+    if isinstance(bucket, list):
+        for value in bucket:
+            yield value
+        return
+
+    if isinstance(bucket, dict):
+        preferred_keys = ["tr", "tek", "default", "0", "en"]
+        seen = set()
+        for key in preferred_keys:
+            if key in bucket:
+                seen.add(key)
+                yield bucket[key]
+        for key, value in bucket.items():
+            if key not in seen:
+                yield value
+
+
+def extract_fullhdfilmizlesene_iframe_candidates(text, base_url):
+    urls = []
+    m = RE_FULLHDFILMIZLESENE_SCX.search(text or "")
+    if not m:
+        return urls
+
+    try:
+        payload = json.loads(m.group(1))
+    except Exception:
+        return urls
+
+    if not isinstance(payload, dict):
+        return urls
+
+    items = []
+    for name, item in payload.items():
+        if not isinstance(item, dict):
+            continue
+        try:
+            order = int(item.get("order", 999))
+        except Exception:
+            order = 999
+        items.append((order, name, item))
+
+    for _, _, item in sorted(items, key=lambda x: x[0]):
+        sx = item.get("sx") if isinstance(item.get("sx"), dict) else {}
+        for bucket in (sx.get("t"), sx.get("p")):
+            for encoded in iter_scx_values(bucket):
+                decoded = decode_fullhdfilmizlesene_scx_value(str(encoded or ""))
+                if not decoded:
+                    continue
+                iframe_urls = extract_iframe_candidates(decoded, base_url) if "<" in decoded else []
+                if iframe_urls:
+                    urls.extend(iframe_urls)
+                    continue
+                u = normalize_url(decoded, base_url)
+                if is_http_url(u):
+                    urls.append(u)
 
     return dedup_keep_order(urls)
 
@@ -528,7 +623,14 @@ def extract_url_from_jsonish(body, base_url=""):
 
 
 def normalize_subtitle_language(label):
-    text = (label or "").strip().lower()
+    text = (label or "").strip().lower().replace("\u0307", "").translate(str.maketrans({
+        "\u0131": "i",
+        "\u011f": "g",
+        "\u00fc": "u",
+        "\u015f": "s",
+        "\u00f6": "o",
+        "\u00e7": "c",
+    }))
     text = (
         text.replace("ı", "i")
         .replace("ğ", "g")
@@ -683,6 +785,25 @@ def is_filmmakinesi_embed_url(url):
         host in ("closeload.filmmakinesi.to", "rapid.filmmakinesi.to")
         and ("embed" in path or "/video/" in path)
     )
+
+
+def is_rapidvid_embed_url(url):
+    try:
+        p = urlparse(url or "")
+        host = (p.hostname or "").lower()
+        path = (p.path or "").lower()
+    except Exception:
+        return False
+
+    return host == "rapidvid.net" and "/vod/" in path
+
+
+def is_fullhdfilmizlesene_stream_host(url):
+    try:
+        host = (urlparse(url or "").hostname or "").lower()
+    except Exception:
+        return False
+    return host == "photogrids.site" or host.endswith(".photogrids.site")
 
 
 def hdfilmcehennemi_embed_url(embed_id):
@@ -927,6 +1048,47 @@ def fix_hdfilmizleto_subtitles(subtitles):
         if item.get("url"):
             fixed.append(item)
     return fixed
+
+
+def decode_rapidvid_stream_url(embed_html, embed_url):
+    for raw in RE_RAPIDVID_AV_FILE.findall(embed_html or ""):
+        stream_url = normalize_url(decode_rapidvid_av_value(raw), embed_url)
+        if is_http_url(stream_url) and is_fullhdfilmizlesene_stream_host(stream_url):
+            return stream_url
+    return ""
+
+
+def resolve_rapidvid_embed_detail(embed_url, upstream_headers, embed_html=None):
+    referer = upstream_headers.get("Referer") or FULLHDFILMIZLESENE_BASE_DOMAIN + "/"
+    embed_origin = origin_of(embed_url) or "https://rapidvid.net"
+    headers = {
+        "User-Agent": upstream_headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+        "Accept": upstream_headers.get("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+        "Accept-Language": upstream_headers.get("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"),
+        "Referer": referer,
+        "Origin": origin_of(referer) or FULLHDFILMIZLESENE_BASE_DOMAIN,
+        "Cache-Control": "no-cache",
+    }
+
+    html = embed_html
+    if html is None:
+        html = fetch_text(embed_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not html:
+        return {}
+
+    stream_url = decode_rapidvid_stream_url(html, embed_url)
+    if not stream_url:
+        cands = extract_m3u8_candidates(html, embed_url)
+        stream_url = cands[0] if cands else ""
+    if not stream_url:
+        return {}
+
+    subtitles = extract_jwplayer_subtitles(html, embed_url)
+    return {
+        "url": stream_url,
+        "headers": make_playback_headers(stream_url, referer_hint=embed_url, origin_hint=embed_origin),
+        "subtitles": subtitles,
+    }
 
 
 def resolve_vidrame_embed_detail(embed_url, upstream_headers, embed_html=""):
@@ -1231,6 +1393,11 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
         if fast.get("url"):
             return fast
 
+    if is_rapidvid_embed_url(effective_page_url):
+        fast = resolve_rapidvid_embed_detail(effective_page_url, headers, embed_html=html)
+        if fast.get("url"):
+            return fast
+
     cands = extract_m3u8_candidates(html, effective_page_url)
     if cands:
         return {"url": cands[0], "subtitles": []}
@@ -1263,6 +1430,15 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
 
         if is_vidrame_embed_url(u):
             fast = resolve_vidrame_embed_detail(u, {
+                "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+                "Referer": effective_page_url,
+                "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
+            })
+            if fast.get("url"):
+                return fast
+
+        if is_rapidvid_embed_url(u):
+            fast = resolve_rapidvid_embed_detail(u, {
                 "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
                 "Referer": effective_page_url,
                 "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
@@ -1509,6 +1685,25 @@ def build_filmmakinesi_targets(slug, sezon_no, bolum_no):
     return targets
 
 
+def build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no):
+    base = FULLHDFILMIZLESENE_BASE_DOMAIN
+    clean_slug = (slug or "").strip().strip("/")
+    if not clean_slug:
+        return []
+
+    variants = [clean_slug]
+    if clean_slug.endswith("-izle"):
+        variants.append(clean_slug[:-5])
+    if not clean_slug.endswith("-2"):
+        variants.append(clean_slug + "-2")
+
+    targets = []
+    for variant in dedup_keep_order([v.strip("-/") for v in variants if v.strip("-/")]):
+        targets.append(f"{base}/film/{variant}/")
+        targets.append(f"{base}/film/{variant}")
+    return targets
+
+
 def source_order_for_yayin(slug_candidates):
     hint = (request.args.get("src") or request.args.get("source") or "").strip().lower()
     source_aliases = {
@@ -1518,10 +1713,12 @@ def source_order_for_yayin(slug_candidates):
         "hdfilmizle.to": "hdfilmizleto",
         "film-makinesi": "filmmakinesi",
         "filmmakinesi.to": "filmmakinesi",
+        "fullhdfilmizlesene.life": "fullhdfilmizlesene",
+        "fullhdfilmizlesene": "fullhdfilmizlesene",
     }
     hint = source_aliases.get(hint, hint)
     sources = ["filmhane", "fullhd", "hdizipal"]
-    optional_sources = ["hdfilmizleto", "filmmakinesi"]
+    optional_sources = ["hdfilmizleto", "filmmakinesi", "fullhdfilmizlesene"]
     if hint in sources + optional_sources:
         return [hint] + [source for source in sources if source != hint]
 
@@ -1955,6 +2152,7 @@ def stream_dizi(dizi, bolum):
     hdfilmcehennemi_candidates = []
     hdfilmizleto_candidates = []
     filmmakinesi_candidates = []
+    fullhdfilmizlesene_candidates = []
     for slug in slug_candidates:
         if slug in films:
             mapped_candidates.append(films[slug])
@@ -1978,6 +2176,9 @@ def stream_dizi(dizi, bolum):
     for slug in slug_candidates:
         filmmakinesi_candidates.extend(build_filmmakinesi_targets(slug, sezon_no, bolum_no))
 
+    for slug in slug_candidates:
+        fullhdfilmizlesene_candidates.extend(build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no))
+
     source_candidates = {
         "filmhane": filmhane_candidates,
         "fullhd": fullhd_candidates,
@@ -1985,6 +2186,7 @@ def stream_dizi(dizi, bolum):
         "hdfilmcehennemi": hdfilmcehennemi_candidates,
         "hdfilmizleto": hdfilmizleto_candidates,
         "filmmakinesi": filmmakinesi_candidates,
+        "fullhdfilmizlesene": fullhdfilmizlesene_candidates,
     }
     candidates = list(mapped_candidates)
     for source in source_order_for_yayin(slug_candidates):
