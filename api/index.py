@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V195"
+VERSION = "V196"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -92,6 +92,11 @@ HDFILMCEHENNEMI_KNOWN_EMBEDS = {
     "kac-run-izle-hdf-6": "cvoodwhGycV",
     "kac-run-izle": "cvoodwhGycV",
     "kac-run": "cvoodwhGycV",
+}
+
+FULLHDFILMIZLESENE_KNOWN_RAPIDVIDS = {
+    "run-2020": "v1x3dff5ca0",
+    "run-2020-2": "v1x3dff5ca0",
 }
 
 
@@ -796,6 +801,33 @@ def is_rapidvid_embed_url(url):
         return False
 
     return host == "rapidvid.net" and "/vod/" in path
+
+
+def rapidvid_embed_url(video_id):
+    clean_id = (video_id or "").strip().strip("/")
+    if not clean_id:
+        return ""
+    if not clean_id.startswith("v1x"):
+        clean_id = "v1x" + clean_id
+    return f"https://rapidvid.net/vod/{clean_id}"
+
+
+def fullhdfilmizlesene_rapidvid_id_for_slug(slug):
+    clean_slug = (slug or "").strip().strip("/").lower()
+    if not clean_slug:
+        return ""
+
+    mapped = FULLHDFILMIZLESENE_KNOWN_RAPIDVIDS.get(clean_slug)
+    if mapped:
+        return mapped
+
+    for prefix in ("rapidvid-", "rv-"):
+        if clean_slug.startswith(prefix):
+            candidate = clean_slug[len(prefix):].strip("-/")
+            if re.match(r"^(?:v1x)?[a-z0-9]+$", candidate):
+                return candidate
+
+    return ""
 
 
 def is_fullhdfilmizlesene_stream_host(url):
@@ -1699,9 +1731,12 @@ def build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no):
 
     targets = []
     for variant in dedup_keep_order([v.strip("-/") for v in variants if v.strip("-/")]):
+        rapidvid_id = fullhdfilmizlesene_rapidvid_id_for_slug(variant)
+        if rapidvid_id:
+            targets.append(rapidvid_embed_url(rapidvid_id))
         targets.append(f"{base}/film/{variant}/")
         targets.append(f"{base}/film/{variant}")
-    return targets
+    return dedup_keep_order(targets)
 
 
 def source_order_for_yayin(slug_candidates):
@@ -1723,6 +1758,9 @@ def source_order_for_yayin(slug_candidates):
         return [hint] + [source for source in sources if source != hint]
 
     primary = (slug_candidates[0] if slug_candidates else "").lower()
+    if fullhdfilmizlesene_rapidvid_id_for_slug(primary):
+        return ["fullhdfilmizlesene"] + sources
+
     if re.search(r"-fm\d+$", primary):
         return ["filmmakinesi"] + sources
 
