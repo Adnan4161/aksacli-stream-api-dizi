@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V199"
+VERSION = "V200"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -205,6 +205,22 @@ def redirect_light(target_url, ttl=SHORT_TTL):
 
 def wants_json():
     return (request.args.get("fmt") or "").strip().lower() == "json"
+
+
+def wants_debug():
+    return (request.args.get("debug") or "").strip().lower() in {"1", "true", "yes"}
+
+
+def json_response(payload, status=200):
+    return Response(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        status=status,
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 def make_playback_headers(stream_url, referer_hint="", origin_hint=""):
@@ -1211,7 +1227,7 @@ def sobreat_playlist_url(file_value, embed_url):
     return normalize_url(f"/playlist/{value}.txt", embed_url)
 
 
-def resolve_sobreatsesuyp_embed_detail(embed_url, upstream_headers, embed_html=None):
+def resolve_sobreatsesuyp_embed_detail(embed_url, upstream_headers, embed_html=None, trace=None):
     embed_origin = origin_of(embed_url) or "https://sobreatsesuyp.com"
     referer = upstream_headers.get("Referer") or FULLHDFILMIZLESENE_BASE_DOMAIN + "/"
     headers = {
@@ -1227,11 +1243,22 @@ def resolve_sobreatsesuyp_embed_detail(embed_url, upstream_headers, embed_html=N
     if html is None:
         html = fetch_text(embed_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
     if not html:
+        if trace is not None:
+            trace.append({"stage": "sobreat_embed", "url": embed_url, "ok": False, "reason": "empty_html"})
         return {}
 
     config = parse_player_configs(html)
     playlist_file = str(config.get("file") or "").strip()
     csrf_token = str(config.get("key") or "").strip()
+    if trace is not None:
+        trace.append({
+            "stage": "sobreat_config",
+            "url": embed_url,
+            "ok": bool(playlist_file),
+            "html_len": len(html),
+            "has_key": bool(csrf_token),
+            "playlist_file": playlist_file[:160],
+        })
     if not playlist_file:
         return {}
 
@@ -1249,12 +1276,22 @@ def resolve_sobreatsesuyp_embed_detail(embed_url, upstream_headers, embed_html=N
 
     playlist_text = fetch_text(playlist_url, headers=playlist_headers, timeout_sec=DEFAULT_TIMEOUT)
     if not playlist_text:
+        if trace is not None:
+            trace.append({"stage": "sobreat_playlist", "url": playlist_url, "ok": False, "reason": "empty_playlist"})
         return {}
 
     try:
         playlist_payload = json.loads(playlist_text)
     except Exception:
         playlist_payload = []
+    if trace is not None:
+        trace.append({
+            "stage": "sobreat_playlist",
+            "url": playlist_url,
+            "ok": bool(playlist_payload),
+            "text_len": len(playlist_text),
+            "items": len(playlist_payload) if isinstance(playlist_payload, list) else 0,
+        })
 
     for item in sorted_sobreat_playlist_items(playlist_payload):
         stream_lookup = sobreat_playlist_url(item.get("file"), embed_url)
@@ -1265,6 +1302,15 @@ def resolve_sobreatsesuyp_embed_detail(embed_url, upstream_headers, embed_html=N
         stream_url = extract_url_from_jsonish(body, base_url=stream_lookup)
         if not stream_url and body.strip().startswith(("http://", "https://")):
             stream_url = normalize_url(body.strip(), stream_lookup)
+        if trace is not None:
+            trace.append({
+                "stage": "sobreat_stream",
+                "title": str(item.get("title") or ""),
+                "url": stream_lookup[:220],
+                "ok": bool(stream_url),
+                "body_len": len(body or ""),
+                "body_head": (body or "")[:140],
+            })
         if not stream_url:
             continue
 
@@ -1549,15 +1595,26 @@ def resolve_playerjs_embed(embed_url, upstream_headers):
     return ""
 
 
-def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
+def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None):
     hdf_known = resolve_hdfilmcehennemi_known_embed_detail(page_url, headers)
     if hdf_known.get("url"):
         return hdf_known
 
     html, effective_page_url = fetch_text_with_final_url(page_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
     if not html:
+        if trace is not None:
+            trace.append({"stage": "page_fetch", "depth": depth, "url": page_url, "ok": False, "reason": "empty_html"})
         return {}
     effective_page_url = effective_page_url or page_url
+    if trace is not None:
+        trace.append({
+            "stage": "page_fetch",
+            "depth": depth,
+            "url": page_url,
+            "ok": True,
+            "effective": effective_page_url,
+            "html_len": len(html),
+        })
 
     if is_hlszone_embed_url(effective_page_url):
         fast = resolve_hlszone_embed_detail(effective_page_url, headers, embed_html=html)
@@ -1585,7 +1642,7 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
             return fast
 
     if is_sobreatsesuyp_embed_url(effective_page_url):
-        fast = resolve_sobreatsesuyp_embed_detail(effective_page_url, headers, embed_html=html)
+        fast = resolve_sobreatsesuyp_embed_detail(effective_page_url, headers, embed_html=html, trace=trace)
         if fast.get("url"):
             return fast
 
@@ -1597,6 +1654,14 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
         return {}
 
     embeds = extract_iframe_candidates(html, effective_page_url)
+    if trace is not None:
+        trace.append({
+            "stage": "embeds",
+            "depth": depth,
+            "url": effective_page_url,
+            "count": len(embeds),
+            "first": embeds[:6],
+        })
     for u in embeds[:8]:
         low = u.lower()
 
@@ -1642,7 +1707,7 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
                 "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
                 "Referer": effective_page_url,
                 "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
-            })
+            }, trace=trace)
             if fast.get("url"):
                 return fast
 
@@ -1659,7 +1724,7 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
             "Referer": effective_page_url,
             "Origin": current_origin if current_origin else (next_origin if next_origin else headers.get("Origin", BASE_HEADERS["Origin"])),
         }
-        found = resolve_from_page_detail(u, next_headers, depth + 1, max_depth)
+        found = resolve_from_page_detail(u, next_headers, depth + 1, max_depth, trace=trace)
         if found.get("url"):
             return found
 
@@ -2394,8 +2459,16 @@ def stream_dizi(dizi, bolum):
         "filmmakinesi": filmmakinesi_candidates,
         "fullhdfilmizlesene": fullhdfilmizlesene_candidates,
     }
+    source_order = source_order_for_yayin(slug_candidates)
+    source_lookup = {}
+    for source_name, source_list in source_candidates.items():
+        for item in source_list:
+            source_lookup.setdefault(item, source_name)
+    for item in mapped_candidates:
+        source_lookup.setdefault(item, "mapped")
+
     candidates = list(mapped_candidates)
-    for source in source_order_for_yayin(slug_candidates):
+    for source in source_order:
         candidates.extend(source_candidates.get(source, []))
 
     # dedup keep order
@@ -2409,8 +2482,10 @@ def stream_dizi(dizi, bolum):
 
     # token links carry a long expiry, but keep the in-memory cache modest.
     ck = f"yayin:{dizi}:{bolum}"
+    debug_enabled = wants_debug()
+    debug_attempts = []
     cached = cache_get(ck)
-    if cached:
+    if cached and not debug_enabled:
         if isinstance(cached, dict):
             return respond_stream(
                 cached.get("url") or "",
@@ -2422,8 +2497,19 @@ def stream_dizi(dizi, bolum):
 
     for target_page in ordered_candidates:
         headers = build_page_headers(target_page)
-        detail = resolve_from_page_detail(target_page, headers=headers, max_depth=3)
+        trace = []
+        started = time.time()
+        detail = resolve_from_page_detail(target_page, headers=headers, max_depth=3, trace=trace if debug_enabled else None)
         stream_url = detail.get("url") or ""
+        if debug_enabled:
+            debug_attempts.append({
+                "source": source_lookup.get(target_page, "unknown"),
+                "target": target_page,
+                "ok": bool(stream_url),
+                "elapsed_ms": int((time.time() - started) * 1000),
+                "stream_host": (urlparse(stream_url).hostname or "") if stream_url else "",
+                "trace": trace[-12:],
+            })
         if stream_url:
             playback_headers = detail.get("headers") or make_playback_headers(stream_url=stream_url)
             payload = {
@@ -2432,12 +2518,34 @@ def stream_dizi(dizi, bolum):
                 "subtitles": detail.get("subtitles") or [],
             }
             cache_set(ck, payload, STREAM_CACHE_TTL)
+            if debug_enabled:
+                return json_response({
+                    "ok": True,
+                    "version": VERSION,
+                    "slugCandidates": slug_candidates,
+                    "sourceOrder": source_order,
+                    "candidateCount": len(ordered_candidates),
+                    "url": client_playback_url(stabilize_stream_url(stream_url)),
+                    "headers": playback_headers,
+                    "subtitles": payload["subtitles"],
+                    "attempts": debug_attempts,
+                })
             return respond_stream(
                 stream_url,
                 playback_headers=playback_headers,
                 subtitles=payload["subtitles"],
                 ttl=SHORT_TTL,
             )
+
+    if debug_enabled:
+        return json_response({
+            "ok": False,
+            "version": VERSION,
+            "slugCandidates": slug_candidates,
+            "sourceOrder": source_order,
+            "candidateCount": len(ordered_candidates),
+            "attempts": debug_attempts,
+        }, status=404)
 
     return "Yayin bulunamadi.", 404
 
