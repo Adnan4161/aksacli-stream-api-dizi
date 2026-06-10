@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V200"
+VERSION = "V201"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -98,6 +98,13 @@ HDFILMCEHENNEMI_KNOWN_EMBEDS = {
 FULLHDFILMIZLESENE_KNOWN_RAPIDVIDS = {
     "run-2020": "v1x3dff5ca0",
     "run-2020-2": "v1x3dff5ca0",
+}
+
+FULLHDFILMIZLESENE_KNOWN_SOBREATS = {
+    "sniper-the-white-raven": [
+        "82082b2cca44274df97053c381591b0d",
+        "864bbe578e7cbde7188bedf699a2128a",
+    ],
 }
 
 
@@ -876,6 +883,13 @@ def rapidvid_embed_url(video_id):
     return f"https://rapidvid.net/vod/{clean_id}"
 
 
+def sobreat_embed_url(video_id):
+    clean_id = (video_id or "").strip().strip("/")
+    if not clean_id:
+        return ""
+    return f"https://sobreatsesuyp.com/movie/{clean_id}/iframe"
+
+
 def fullhdfilmizlesene_rapidvid_id_for_slug(slug):
     clean_slug = (slug or "").strip().strip("/").lower()
     if not clean_slug:
@@ -892,6 +906,13 @@ def fullhdfilmizlesene_rapidvid_id_for_slug(slug):
                 return candidate
 
     return ""
+
+
+def fullhdfilmizlesene_sobreat_ids_for_slug(slug):
+    clean_slug = (slug or "").strip().strip("/").lower()
+    if not clean_slug:
+        return []
+    return FULLHDFILMIZLESENE_KNOWN_SOBREATS.get(clean_slug, [])
 
 
 def is_fullhdfilmizlesene_stream_host(url):
@@ -1967,6 +1988,8 @@ def build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no):
         rapidvid_id = fullhdfilmizlesene_rapidvid_id_for_slug(variant)
         if rapidvid_id:
             targets.append(rapidvid_embed_url(rapidvid_id))
+        for sobreat_id in fullhdfilmizlesene_sobreat_ids_for_slug(variant):
+            targets.append(sobreat_embed_url(sobreat_id))
         targets.append(f"{base}/film/{variant}/")
         targets.append(f"{base}/film/{variant}")
     return dedup_keep_order(targets)
@@ -1991,7 +2014,7 @@ def source_order_for_yayin(slug_candidates):
         return [hint] + [source for source in sources + optional_sources if source != hint]
 
     primary = (slug_candidates[0] if slug_candidates else "").lower()
-    if fullhdfilmizlesene_rapidvid_id_for_slug(primary):
+    if fullhdfilmizlesene_rapidvid_id_for_slug(primary) or fullhdfilmizlesene_sobreat_ids_for_slug(primary):
         return ["fullhdfilmizlesene"] + sources + [source for source in optional_sources if source != "fullhdfilmizlesene"]
 
     if re.search(r"-fm\d+$", primary):
