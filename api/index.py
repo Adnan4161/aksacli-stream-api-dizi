@@ -113,6 +113,12 @@ FULLHDFILMIZLESENE_KNOWN_SOBREATS = {
     ],
 }
 
+FULLHDFILMIZLESENE_KNOWN_VIDMOXY = {
+    "blue-jay": [
+        "https://vidmoxy.net/pt/v1x9b090c1a",
+    ],
+}
+
 
 # HTTP session with tiny retry
 SESSION = requests.Session()
@@ -927,6 +933,17 @@ def sobreat_embed_url(video_id):
     return f"https://sobreatsesuyp.com/movie/{clean_id}/iframe"
 
 
+def vidmoxy_embed_url(video_id):
+    clean_id = (video_id or "").strip().strip("/")
+    if not clean_id:
+        return ""
+    if clean_id.startswith("http://") or clean_id.startswith("https://"):
+        return clean_id
+    if not clean_id.startswith("v1x"):
+        clean_id = "v1x" + clean_id
+    return f"https://vidmoxy.net/pt/{clean_id}"
+
+
 def fullhdfilmizlesene_rapidvid_id_for_slug(slug):
     clean_slug = (slug or "").strip().strip("/").lower()
     if not clean_slug:
@@ -950,6 +967,17 @@ def fullhdfilmizlesene_sobreat_ids_for_slug(slug):
     if not clean_slug:
         return []
     return FULLHDFILMIZLESENE_KNOWN_SOBREATS.get(clean_slug, [])
+
+
+def fullhdfilmizlesene_vidmoxy_urls_for_slug(slug):
+    clean_slug = (slug or "").strip().strip("/").lower()
+    if not clean_slug:
+        return []
+    return [
+        vidmoxy_embed_url(video_id)
+        for video_id in FULLHDFILMIZLESENE_KNOWN_VIDMOXY.get(clean_slug, [])
+        if vidmoxy_embed_url(video_id)
+    ]
 
 
 def is_fullhdfilmizlesene_stream_host(url):
@@ -2103,6 +2131,7 @@ def build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no):
             targets.append(rapidvid_embed_url(rapidvid_id))
         for sobreat_id in fullhdfilmizlesene_sobreat_ids_for_slug(variant):
             targets.append(sobreat_embed_url(sobreat_id))
+        targets.extend(fullhdfilmizlesene_vidmoxy_urls_for_slug(variant))
         targets.append(f"{base}/film/{variant}/")
         targets.append(f"{base}/film/{variant}")
     return dedup_keep_order(targets)
@@ -2127,7 +2156,11 @@ def source_order_for_yayin(slug_candidates):
         return [hint] + [source for source in sources + optional_sources if source != hint]
 
     primary = (slug_candidates[0] if slug_candidates else "").lower()
-    if fullhdfilmizlesene_rapidvid_id_for_slug(primary) or fullhdfilmizlesene_sobreat_ids_for_slug(primary):
+    if (
+        fullhdfilmizlesene_rapidvid_id_for_slug(primary)
+        or fullhdfilmizlesene_sobreat_ids_for_slug(primary)
+        or fullhdfilmizlesene_vidmoxy_urls_for_slug(primary)
+    ):
         return ["fullhdfilmizlesene"] + sources + [source for source in optional_sources if source != "fullhdfilmizlesene"]
 
     if re.search(r"-fm\d+$", primary):
