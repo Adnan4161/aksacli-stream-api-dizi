@@ -15,7 +15,7 @@ from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 
-VERSION = "V201"
+VERSION = "V203"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -64,6 +64,11 @@ _CACHE_MAX = 4000
 RE_M3U8_DIRECT = re.compile(r"https?://[^\"'<>\s]+\.m3u8[^\"'<>\s]*", re.IGNORECASE)
 RE_M3U8_ESCAPED = re.compile(r"https?:\\/\\/[^\"'<>\s]+\.m3u8[^\"'<>\s]*", re.IGNORECASE)
 RE_M3U8_FILESRC = re.compile(r"(?:file|src)\s*[:=]\s*[\"']([^\"']+\.m3u8[^\"']*)[\"']", re.IGNORECASE)
+RE_JWPLAYER_FILE_URL = re.compile(r"""["']file["']\s*:\s*["']((?:\\.|[^"'\\])+)["']""", re.IGNORECASE | re.DOTALL)
+RE_VIDMOXY_ENCODED_VALUE = re.compile(
+    r"""(?:["']q["']\s*:\s*["']([^"']+)["']|_\(\s*["']([^"']+)["']\s*\))""",
+    re.IGNORECASE | re.DOTALL,
+)
 RE_DAION = re.compile(r"[\"'](https?:?\\?/\\?/[^\s\"'<>]*?daioncdn[^\s\"'<>]*?\.m3u8[^\s\"'<>]*?)[\"']", re.IGNORECASE)
 RE_IFRAME = re.compile(r"<iframe[^>]+(?:src|data-src)=[\"']([^\"']+)[\"']", re.IGNORECASE)
 RE_DATA_EMBED = re.compile(r"data-(?:hhs|frame)=[\"']([^\"']+)[\"']", re.IGNORECASE)
@@ -96,6 +101,7 @@ HDFILMCEHENNEMI_KNOWN_EMBEDS = {
 }
 
 FULLHDFILMIZLESENE_KNOWN_RAPIDVIDS = {
+    "abd-1994-brezilya-nin-muhtesem-donusu-tetra-acreditar-de-novo": "v1x89512e1b",
     "run-2020": "v1x3dff5ca0",
     "run-2020-2": "v1x3dff5ca0",
 }
@@ -415,6 +421,23 @@ def extract_m3u8_candidates(text, base_url):
         u = normalize_url(m, base_url)
         if is_http_url(u):
             cands.append(u)
+
+    return dedup_keep_order(cands)
+
+
+def extract_jwplayer_file_candidates(text, base_url):
+    cands = []
+    sources = [text or ""]
+    decoded = html_lib.unescape(text or "").replace("\\/", "/").replace("\\u0026", "&")
+    if decoded and decoded not in sources:
+        sources.append(decoded)
+
+    for source in sources:
+        for raw in RE_JWPLAYER_FILE_URL.findall(source or ""):
+            value = decode_js_string_literal(raw).replace("\\/", "/").replace("\\u0026", "&")
+            u = normalize_url(value, base_url)
+            if is_http_url(u):
+                cands.append(u)
 
     return dedup_keep_order(cands)
 
@@ -874,6 +897,20 @@ def is_sobreatsesuyp_embed_url(url):
     return host.endswith("sobreatsesuyp.com") and "/iframe" in path
 
 
+def is_vidmoxy_embed_url(url):
+    try:
+        p = urlparse(url or "")
+        host = (p.hostname or "").lower()
+        path = (p.path or "").lower()
+    except Exception:
+        return False
+
+    return (
+        (host == "vidmoxy.net" or host.endswith(".vidmoxy.net"))
+        and ("/fl/" in path or "/pt/" in path or "/embed/" in path or "/v/" in path)
+    )
+
+
 def rapidvid_embed_url(video_id):
     clean_id = (video_id or "").strip().strip("/")
     if not clean_id:
@@ -920,7 +957,13 @@ def is_fullhdfilmizlesene_stream_host(url):
         host = (urlparse(url or "").hostname or "").lower()
     except Exception:
         return False
-    return host == "photogrids.site" or host.endswith(".photogrids.site")
+    return (
+        host == "photogrids.site" or host.endswith(".photogrids.site")
+        or host == "imglink.info" or host.endswith(".imglink.info")
+        or host == "pixtures.art" or host.endswith(".pixtures.art")
+        or host == "imgz.me" or host.endswith(".imgz.me")
+        or host == "pictobox.live" or host.endswith(".pictobox.live")
+    )
 
 
 def hdfilmcehennemi_embed_url(embed_id):
@@ -1206,6 +1249,62 @@ def resolve_rapidvid_embed_detail(embed_url, upstream_headers, embed_html=None):
         "headers": make_playback_headers(stream_url, referer_hint=embed_url, origin_hint=embed_origin),
         "subtitles": subtitles,
     }
+
+
+def decode_vidmoxy_stream_candidates(embed_html, embed_url):
+    urls = []
+
+    for u in extract_m3u8_candidates(embed_html, embed_url):
+        urls.append(u)
+
+    for u in extract_jwplayer_file_candidates(embed_html, embed_url):
+        urls.append(u)
+
+    for match in RE_VIDMOXY_ENCODED_VALUE.findall(embed_html or ""):
+        raw = match[0] or match[1] or ""
+        variants = dedup_keep_order([
+            raw,
+            decode_js_string_literal(raw),
+            decode_js_string_literal(raw).replace("\\\\", "\\"),
+            decode_js_string_literal(raw).replace("\\", ""),
+        ])
+        for variant in variants:
+            decoded = decode_rapidvid_av_value(variant)
+            u = normalize_url(decoded, embed_url)
+            if is_http_url(u):
+                urls.append(u)
+
+    return dedup_keep_order(urls)
+
+
+def resolve_vidmoxy_embed_detail(embed_url, upstream_headers, embed_html=None):
+    embed_origin = origin_of(embed_url) or "https://vidmoxy.net"
+    headers = {
+        "User-Agent": upstream_headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+        "Accept": upstream_headers.get("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+        "Accept-Language": upstream_headers.get("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"),
+        "Referer": upstream_headers.get("Referer", FULLHDFILMIZLESENE_BASE_DOMAIN + "/"),
+        "Origin": upstream_headers.get("Origin", embed_origin),
+        "Cache-Control": "no-cache",
+    }
+
+    html = embed_html
+    if html is None:
+        html = fetch_text(embed_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not html:
+        return {}
+
+    for stream_url in decode_vidmoxy_stream_candidates(html, embed_url):
+        if not is_fullhdfilmizlesene_stream_host(stream_url) and not is_probable_hls_manifest_url(stream_url):
+            continue
+        subtitles = extract_jwplayer_subtitles(html, embed_url)
+        return {
+            "url": stream_url,
+            "headers": make_playback_headers(stream_url, referer_hint=embed_url, origin_hint=embed_origin),
+            "subtitles": subtitles,
+        }
+
+    return {}
 
 
 def parse_player_configs(embed_html):
@@ -1657,6 +1756,11 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None
         if fast.get("url"):
             return fast
 
+    if is_vidmoxy_embed_url(effective_page_url):
+        fast = resolve_vidmoxy_embed_detail(effective_page_url, headers, embed_html=html)
+        if fast.get("url"):
+            return fast
+
     if is_rapidvid_embed_url(effective_page_url):
         fast = resolve_rapidvid_embed_detail(effective_page_url, headers, embed_html=html)
         if fast.get("url"):
@@ -1707,6 +1811,15 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None
 
         if is_vidrame_embed_url(u):
             fast = resolve_vidrame_embed_detail(u, {
+                "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+                "Referer": effective_page_url,
+                "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
+            })
+            if fast.get("url"):
+                return fast
+
+        if is_vidmoxy_embed_url(u):
+            fast = resolve_vidmoxy_embed_detail(u, {
                 "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
                 "Referer": effective_page_url,
                 "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
