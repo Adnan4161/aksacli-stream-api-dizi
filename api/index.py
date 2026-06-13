@@ -117,10 +117,14 @@ FULLHDFILMIZLESENE_KNOWN_VIDMOXY = {
     "blue-jay": [
         "https://vidmoxy.net/pt/v1x9b090c1a",
     ],
+    "paralel-evren": [
+        "https://vidmoxy.net/pt/v1x36467b6d",
+    ],
 }
 
 VIDMOXY_KNOWN_STREAMS = {
     "https://vidmoxy.net/pt/v1x9b090c1a": "https://v1.pictobox.live/mz/Dzk1MF5XLKxhZwNkAv4kZQtjpP5KEHWFnKNhEUIuoNd0zxpTywqT9vo3thoTy2MDs0xi1vr1",
+    "https://vidmoxy.net/pt/v1x36467b6d": "https://v1.pictobox.live/m2/HTSlLJkyoP5SqaWyov5Qo2uypzIhL2HhZwNkZl4kZQtjpP5RqJSfd0zxpTywqT9vo3thL2Mxs0xi1vr1",
 }
 
 
@@ -955,6 +959,23 @@ def vidmoxy_known_stream_url(embed_url):
     return VIDMOXY_KNOWN_STREAMS.get(key, "")
 
 
+def normalize_vidmoxy_stream_url(stream_url):
+    try:
+        p = urlparse(stream_url or "")
+    except Exception:
+        return stream_url
+
+    host = (p.hostname or "").lower()
+    if host == "pictobox.cfd":
+        return urlunparse(p._replace(netloc="pictobox.live"))
+    if host.endswith(".pictobox.cfd"):
+        fixed_host = host[: -len(".pictobox.cfd")] + ".pictobox.live"
+        if p.port:
+            fixed_host = f"{fixed_host}:{p.port}"
+        return urlunparse(p._replace(netloc=fixed_host))
+    return stream_url
+
+
 def fullhdfilmizlesene_rapidvid_id_for_slug(slug):
     clean_slug = (slug or "").strip().strip("/").lower()
     if not clean_slug:
@@ -1002,6 +1023,7 @@ def is_fullhdfilmizlesene_stream_host(url):
         or host == "pixtures.art" or host.endswith(".pixtures.art")
         or host == "imgz.me" or host.endswith(".imgz.me")
         or host == "pictobox.live" or host.endswith(".pictobox.live")
+        or host == "pictobox.cfd" or host.endswith(".pictobox.cfd")
     )
 
 
@@ -1329,6 +1351,7 @@ def resolve_vidmoxy_embed_detail(embed_url, upstream_headers, embed_html=None):
 
     known_stream_url = vidmoxy_known_stream_url(embed_url)
     if known_stream_url:
+        known_stream_url = normalize_vidmoxy_stream_url(known_stream_url)
         return {
             "url": known_stream_url,
             "headers": make_playback_headers(known_stream_url, referer_hint=embed_url, origin_hint=embed_origin),
@@ -1342,6 +1365,7 @@ def resolve_vidmoxy_embed_detail(embed_url, upstream_headers, embed_html=None):
         return {}
 
     for stream_url in decode_vidmoxy_stream_candidates(html, embed_url):
+        stream_url = normalize_vidmoxy_stream_url(stream_url)
         if not is_fullhdfilmizlesene_stream_host(stream_url) and not is_probable_hls_manifest_url(stream_url):
             continue
         subtitles = extract_jwplayer_subtitles(html, embed_url)
