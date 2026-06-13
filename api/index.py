@@ -119,6 +119,10 @@ FULLHDFILMIZLESENE_KNOWN_VIDMOXY = {
     ],
 }
 
+VIDMOXY_KNOWN_STREAMS = {
+    "https://vidmoxy.net/pt/v1x9b090c1a": "https://v1.pictobox.live/mz/Dzk1MF5XLKxhZwNkAv4kZQtjpP5KEHWFnKNhEUIuoNd0zxpTywqT9vo3thoTy2MDs0xi1vr1",
+}
+
 
 # HTTP session with tiny retry
 SESSION = requests.Session()
@@ -944,6 +948,13 @@ def vidmoxy_embed_url(video_id):
     return f"https://vidmoxy.net/pt/{clean_id}"
 
 
+def vidmoxy_known_stream_url(embed_url):
+    key = (embed_url or "").strip().rstrip("/").lower()
+    if not key:
+        return ""
+    return VIDMOXY_KNOWN_STREAMS.get(key, "")
+
+
 def fullhdfilmizlesene_rapidvid_id_for_slug(slug):
     clean_slug = (slug or "").strip().strip("/").lower()
     if not clean_slug:
@@ -1315,6 +1326,14 @@ def resolve_vidmoxy_embed_detail(embed_url, upstream_headers, embed_html=None):
         "Origin": upstream_headers.get("Origin", embed_origin),
         "Cache-Control": "no-cache",
     }
+
+    known_stream_url = vidmoxy_known_stream_url(embed_url)
+    if known_stream_url:
+        return {
+            "url": known_stream_url,
+            "headers": make_playback_headers(known_stream_url, referer_hint=embed_url, origin_hint=embed_origin),
+            "subtitles": [],
+        }
 
     html = embed_html
     if html is None:
@@ -1744,6 +1763,19 @@ def resolve_playerjs_embed(embed_url, upstream_headers):
 
 
 def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None):
+    if is_vidmoxy_embed_url(page_url):
+        fast = resolve_vidmoxy_embed_detail(page_url, headers, embed_html="")
+        if fast.get("url"):
+            if trace is not None:
+                trace.append({
+                    "stage": "vidmoxy_known",
+                    "depth": depth,
+                    "url": page_url,
+                    "ok": True,
+                    "stream_host": urlparse(fast.get("url") or "").hostname or "",
+                })
+            return fast
+
     hdf_known = resolve_hdfilmcehennemi_known_embed_detail(page_url, headers)
     if hdf_known.get("url"):
         return hdf_known
