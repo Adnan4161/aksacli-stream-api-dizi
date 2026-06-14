@@ -2104,6 +2104,16 @@ def build_hdizipal_targets(slug, sezon_no, bolum_no):
         f"{base}/dizi/{clean_slug}/sezon-{sezon_no}/bolum-{bolum_no}",
     ]
 
+def build_dizifilm_targets(slug, sezon_no, bolum_no):
+    base = DIZIFILM_BASE_DOMAIN
+    clean_slug = (slug or "").strip().strip("/")
+    if not clean_slug:
+        return []
+
+    return [
+        f"{base}/film/{clean_slug}",
+        f"{base}/film/{clean_slug}/",
+    ]
 
 def build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no):
     base = HDFILMCEHENNEMI_BASE_DOMAIN
