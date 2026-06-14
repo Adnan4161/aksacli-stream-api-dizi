@@ -30,7 +30,6 @@ BASE_HEADERS = {
 API_KEY = os.getenv("API_KEY", "").strip()
 FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.ink").rstrip("/")
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
-DIZIFILM_BASE_DOMAIN = os.getenv("DIZIFILM_BASE_DOMAIN", "https://dizifilm.life").rstrip("/")
 HDIZIPAL_BASE_DOMAIN = os.getenv("HDIZIPAL_BASE_DOMAIN", "https://hdizipal.com").rstrip("/")
 HDFILMCEHENNEMI_BASE_DOMAIN = os.getenv("HDFILMCEHENNEMI_BASE_DOMAIN", "https://www.hdfilmcehennemi.nl").rstrip("/")
 HDFILMCEHENNEMI_EMBED_DOMAIN = os.getenv("HDFILMCEHENNEMI_EMBED_DOMAIN", "https://hdfilmcehennemi.mobi").rstrip("/")
@@ -2104,16 +2103,6 @@ def build_hdizipal_targets(slug, sezon_no, bolum_no):
         f"{base}/dizi/{clean_slug}/sezon-{sezon_no}/bolum-{bolum_no}",
     ]
 
-def build_dizifilm_targets(slug, sezon_no, bolum_no):
-    base = DIZIFILM_BASE_DOMAIN
-    clean_slug = (slug or "").strip().strip("/")
-    if not clean_slug:
-        return []
-
-    return [
-        f"{base}/film/{clean_slug}",
-        f"{base}/film/{clean_slug}/",
-    ]
 
 def build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no):
     base = HDFILMCEHENNEMI_BASE_DOMAIN
@@ -2211,14 +2200,13 @@ def source_order_for_yayin(slug_candidates):
         # its HLS media list points to JPEG-like segments that ExoPlayer cannot parse.
         "hdfilmizle": "hdfilmizleto",
         "hdfilmizle.to": "hdfilmizleto",
-        "dizifilm.life": "dizifilm",
         "film-makinesi": "filmmakinesi",
         "filmmakinesi.to": "filmmakinesi",
         "fullhdfilmizlesene.life": "fullhdfilmizlesene",
         "fullhdfilmizlesene": "fullhdfilmizlesene",
     }
     hint = source_aliases.get(hint, hint)
-    sources = ["filmhane", "fullhd", "hdizipal", "dizifilm"]
+    sources = ["filmhane", "fullhd", "hdizipal"]
     optional_sources = ["hdfilmizleto", "filmmakinesi", "fullhdfilmizlesene"]
     if hint in sources + optional_sources:
         return [hint] + [source for source in sources + optional_sources if source != hint]
@@ -2656,7 +2644,6 @@ def stream_dizi(dizi, bolum):
     mapped_candidates = []
     filmhane_candidates = []
     fullhd_candidates = []
-    dizifilm_candidates = []
     hdizipal_candidates = []
     hdfilmcehennemi_candidates = []
     hdfilmizleto_candidates = []
@@ -2673,9 +2660,6 @@ def stream_dizi(dizi, bolum):
     for slug in slug_candidates:
         fullhd_candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
 
-    for slug in slug_candidates:
-        dizifilm_candidates.extend(build_dizifilm_targets(slug, sezon_no, bolum_no))
-        
     for slug in slug_candidates:
         hdizipal_candidates.extend(build_hdizipal_targets(slug, sezon_no, bolum_no))
 
@@ -2694,7 +2678,6 @@ def stream_dizi(dizi, bolum):
     source_candidates = {
         "filmhane": filmhane_candidates,
         "fullhd": fullhd_candidates,
-        "dizifilm": dizifilm_candidates,
         "hdizipal": hdizipal_candidates,
         "hdfilmcehennemi": hdfilmcehennemi_candidates,
         "hdfilmizleto": hdfilmizleto_candidates,
