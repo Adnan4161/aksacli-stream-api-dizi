@@ -2201,13 +2201,14 @@ def source_order_for_yayin(slug_candidates):
         # its HLS media list points to JPEG-like segments that ExoPlayer cannot parse.
         "hdfilmizle": "hdfilmizleto",
         "hdfilmizle.to": "hdfilmizleto",
+        "dizifilm.life": "dizifilm.life",
         "film-makinesi": "filmmakinesi",
         "filmmakinesi.to": "filmmakinesi",
         "fullhdfilmizlesene.life": "fullhdfilmizlesene",
         "fullhdfilmizlesene": "fullhdfilmizlesene",
     }
     hint = source_aliases.get(hint, hint)
-    sources = ["filmhane", "fullhd", "hdizipal"]
+    sources = ["filmhane", "fullhd", "hdizipal, dizifilm"]
     optional_sources = ["hdfilmizleto", "filmmakinesi", "fullhdfilmizlesene"]
     if hint in sources + optional_sources:
         return [hint] + [source for source in sources + optional_sources if source != hint]
@@ -2663,7 +2664,7 @@ def stream_dizi(dizi, bolum):
         fullhd_candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
-        dizifilm_candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
+        dizifilm_candidates.extend(build_dizifilm_targets(slug, sezon_no, bolum_no))
         
     for slug in slug_candidates:
         hdizipal_candidates.extend(build_hdizipal_targets(slug, sezon_no, bolum_no))
