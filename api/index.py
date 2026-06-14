@@ -2201,7 +2201,7 @@ def source_order_for_yayin(slug_candidates):
         # its HLS media list points to JPEG-like segments that ExoPlayer cannot parse.
         "hdfilmizle": "hdfilmizleto",
         "hdfilmizle.to": "hdfilmizleto",
-        "dizifilm.life": "dizifilm.life",
+        "dizifilm.life": "dizifilmlife",
         "film-makinesi": "filmmakinesi",
         "filmmakinesi.to": "filmmakinesi",
         "fullhdfilmizlesene.life": "fullhdfilmizlesene",
