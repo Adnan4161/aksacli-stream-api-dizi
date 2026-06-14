@@ -36,7 +36,6 @@ HDFILMCEHENNEMI_EMBED_DOMAIN = os.getenv("HDFILMCEHENNEMI_EMBED_DOMAIN", "https:
 HDFILMIZLETO_BASE_DOMAIN = os.getenv("HDFILMIZLETO_BASE_DOMAIN", "https://www.hdfilmizle.to").rstrip("/")
 FILMMAKINESI_BASE_DOMAIN = os.getenv("FILMMAKINESI_BASE_DOMAIN", "https://filmmakinesi.to").rstrip("/")
 FULLHDFILMIZLESENE_BASE_DOMAIN = os.getenv("FULLHDFILMIZLESENE_BASE_DOMAIN", "https://www.fullhdfilmizlesene.life").rstrip("/")
-SINEMAKOLIK_BASE_DOMAIN = os.getenv("SINEMAKOLIK_BASE_DOMAIN", "https://sinemakolik.com/").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 
 _ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
@@ -2103,16 +2102,7 @@ def build_hdizipal_targets(slug, sezon_no, bolum_no):
         f"{base}/dizi/{clean_slug}/{sezon_no}-sezon/{bolum_no}-bolum",
         f"{base}/dizi/{clean_slug}/sezon-{sezon_no}/bolum-{bolum_no}",
     ]
-def build_sinemakolik_targets(slug, sezon_no, bolum_no):
-    base = SINEMAKOLIK_BASE_DOMAIN
-    clean_slug = (slug or "").strip().strip("/")
-    if not base or not clean_slug:
-        return []
 
-    return [
-        f"{base}/yayin/{clean_slug}/{sezon_no}x{bolum_no}",
-        f"{base}/yayin/{clean_slug}/1",
-    ]
 
 def build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no):
     base = HDFILMCEHENNEMI_BASE_DOMAIN
@@ -2214,11 +2204,10 @@ def source_order_for_yayin(slug_candidates):
         "filmmakinesi.to": "filmmakinesi",
         "fullhdfilmizlesene.life": "fullhdfilmizlesene",
         "fullhdfilmizlesene": "fullhdfilmizlesene",
-        "sinemakolik": "sinemakolik",
     }
     hint = source_aliases.get(hint, hint)
     sources = ["filmhane", "fullhd", "hdizipal"]
-    optional_sources = ["hdfilmizleto", "filmmakinesi", "fullhdfilmizlesene", "sinemakolik"]
+    optional_sources = ["hdfilmizleto", "filmmakinesi", "fullhdfilmizlesene"]
     if hint in sources + optional_sources:
         return [hint] + [source for source in sources + optional_sources if source != hint]
 
@@ -2646,7 +2635,6 @@ def stream_dizi(dizi, bolum):
         "Juror #2": f"{base}/film/Juror #2",
         "giant": f"{base}/film/giant",
         "k-pops": f"{base}/film/k-pops",
-        "zit-kutuplar": f"{SINEMAKOLIK_BASE_DOMAIN}/film/zit-kutuplar",
     }
 
     sezon_no, bolum_no = parse_episode_token(bolum)
@@ -2661,7 +2649,6 @@ def stream_dizi(dizi, bolum):
     hdfilmizleto_candidates = []
     filmmakinesi_candidates = []
     fullhdfilmizlesene_candidates = []
-    sinemakolik_candidates = []
     for slug in slug_candidates:
         if slug in films:
             mapped_candidates.append(films[slug])
@@ -2687,9 +2674,6 @@ def stream_dizi(dizi, bolum):
 
     for slug in slug_candidates:
         fullhdfilmizlesene_candidates.extend(build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no))
-        
-    for slug in slug_candidates:
-        sinemakolik_candidates.extend(build_sinemakolik_targets(slug, sezon_no, bolum_no))
 
     source_candidates = {
         "filmhane": filmhane_candidates,
@@ -2699,7 +2683,6 @@ def stream_dizi(dizi, bolum):
         "hdfilmizleto": hdfilmizleto_candidates,
         "filmmakinesi": filmmakinesi_candidates,
         "fullhdfilmizlesene": fullhdfilmizlesene_candidates,
-        "sinemakolik": sinemakolik_candidates,
     }
     source_order = source_order_for_yayin(slug_candidates)
     source_lookup = {}
