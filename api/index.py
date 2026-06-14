@@ -2218,7 +2218,7 @@ def source_order_for_yayin(slug_candidates):
         "fullhdfilmizlesene": "fullhdfilmizlesene",
     }
     hint = source_aliases.get(hint, hint)
-    sources = ["filmhane", "fullhd", "hdizipal, "dizifilm"]
+    sources = ["filmhane", "fullhd", "hdizipal", "dizifilm"]
     optional_sources = ["hdfilmizleto", "filmmakinesi", "fullhdfilmizlesene"]
     if hint in sources + optional_sources:
         return [hint] + [source for source in sources + optional_sources if source != hint]
