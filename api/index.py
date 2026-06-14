@@ -2645,6 +2645,7 @@ def stream_dizi(dizi, bolum):
     mapped_candidates = []
     filmhane_candidates = []
     fullhd_candidates = []
+    dizifilm_candidates = []
     hdizipal_candidates = []
     hdfilmcehennemi_candidates = []
     hdfilmizleto_candidates = []
@@ -2661,6 +2662,9 @@ def stream_dizi(dizi, bolum):
     for slug in slug_candidates:
         fullhd_candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
 
+    for slug in slug_candidates:
+        dizifilm_candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
+        
     for slug in slug_candidates:
         hdizipal_candidates.extend(build_hdizipal_targets(slug, sezon_no, bolum_no))
 
@@ -2679,6 +2683,7 @@ def stream_dizi(dizi, bolum):
     source_candidates = {
         "filmhane": filmhane_candidates,
         "fullhd": fullhd_candidates,
+        "dizifilm": dizifilm_candidates,
         "hdizipal": hdizipal_candidates,
         "hdfilmcehennemi": hdfilmcehennemi_candidates,
         "hdfilmizleto": hdfilmizleto_candidates,
