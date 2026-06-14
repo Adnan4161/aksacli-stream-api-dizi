@@ -2646,7 +2646,7 @@ def stream_dizi(dizi, bolum):
         "Juror #2": f"{base}/film/Juror #2",
         "giant": f"{base}/film/giant",
         "k-pops": f"{base}/film/k-pops",
-        "zit-kutuplar": f"{base}/film/zit-kutuplar",
+        "zit-kutuplar": f"{SINEMAKOLIK_BASE_DOMAIN}/film/zit-kutuplar",
     }
 
     sezon_no, bolum_no = parse_episode_token(bolum)
