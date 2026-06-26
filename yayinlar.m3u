@@ -748,3 +748,6 @@ https://hlszone.com/cdn/hls/f39edd51c5fc07fe37b3a57db68b7f65/master.txt.m3u8
 https://hlszone.com/cdn/hls/6b9bd2bcf972d4afe3497cd532cec2a6/master.txt.m3u8
 #EXTINF:-1 tvg-logo="https://static.boxofficeturkiye.com/movie/poster/235x336/60/2360-79980292@2x.jpg", Seni Bulacağım - I Will Find You 8. Bölüm
 https://hlszone.com/cdn/hls/800cc8b565d0359565296d825b783bcc/master.txt.m3u8
+
+#EXTINF:-1 tvg-logo="https://image.tmdb.org/t/p/w342/fzznLJmBzU5tTxFzklepKifE16o.jpg", Good American Family 1. Bölüm
+https://aksacli-stream-api-dizi.vercel.app/yayin/good-american-family-izle/1
