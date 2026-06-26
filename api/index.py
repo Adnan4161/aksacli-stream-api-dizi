@@ -464,12 +464,12 @@ def build_hdizipal_targets(slug, sezon_no, bolum_no):
 
 def source_order_for_yayin(slug_candidates):
     hint = (request.args.get("src") or request.args.get("source") or "").strip().lower()
-    sources = ["filmhane", "fullhd", "hdizipal"]
+    sources = ["fullhd", "filmhane", "hdizipal"]   # fullhd'yi öne aldık
     if hint in sources:
         return [hint] + [source for source in sources if source != hint]
     primary = (slug_candidates[0] if slug_candidates else "").lower()
     if primary.endswith("-izle"):
-        return ["hdizipal", "filmhane", "fullhd"]
+        return ["fullhd", "hdizipal", "filmhane"]
     return sources
 
 def parse_episode_token(raw_bolum):
@@ -539,8 +539,8 @@ def stream_dizi(dizi, bolum):
         "hdizipal": hdizipal_candidates,
     }
 
-    candidates = list(mapped_candidates)
-    for source in source_order_for_yayin(slug_candidates):
+        candidates = list(mapped_candidates)
+    for source in ["fullhd", "filmhane", "hdizipal"]:   # fullhd önce
         candidates.extend(source_candidates.get(source, []))
 
     ordered_candidates = []
