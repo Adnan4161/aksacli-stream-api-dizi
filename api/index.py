@@ -28,7 +28,7 @@ BASE_HEADERS = {
 API_KEY = os.getenv("API_KEY", "").strip()
 FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.ink").rstrip("/")
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
-FULLHD2_BASE_DOMAIN = "https://www.fullhdfilmizlesene.life"   # Yeni site
+FULLHD2_BASE_DOMAIN = "https://www.fullhdfilmizlesene.life"  # Yeni site
 HDIZIPAL_BASE_DOMAIN = os.getenv("HDIZIPAL_BASE_DOMAIN", "https://hdizipal.com").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 
@@ -340,7 +340,7 @@ def parse_episode_token(raw_bolum):
 def stream_dizi(dizi, bolum):
     g = auth_guard()
     if g:
-        return g
+        return "Yayin bulunamadi.", 404
 
     base = FILMHANE_BASE_DOMAIN
     films = {
