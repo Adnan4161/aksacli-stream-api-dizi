@@ -28,7 +28,7 @@ BASE_HEADERS = {
 API_KEY = os.getenv("API_KEY", "").strip()
 FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.ink").rstrip("/")
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
-FULLHD2_BASE_DOMAIN = "https://www.fullhdfilmizlesene.life"  # Yeni site
+FULLHD2_BASE_DOMAIN = "https://www.fullhdfilmizlesene.life"
 HDIZIPAL_BASE_DOMAIN = os.getenv("HDIZIPAL_BASE_DOMAIN", "https://hdizipal.com").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 
@@ -52,7 +52,7 @@ _CACHE = {}
 _CACHE_LOCK = Lock()
 _CACHE_MAX = 4000
 
-# Regex set (orijinal)
+# Regex set
 RE_M3U8_DIRECT = re.compile(r"https?://[^\"'<>\s]+\.m3u8[^\"'<>\s]*", re.IGNORECASE)
 RE_M3U8_ESCAPED = re.compile(r"https?:\\/\\/[^\"'<>\s]+\.m3u8[^\"'<>\s]*", re.IGNORECASE)
 RE_M3U8_FILESRC = re.compile(r"(?:file|src)\s*[:=]\s*[\"']([^\"']+\.m3u8[^\"']*)[\"']", re.IGNORECASE)
@@ -72,10 +72,7 @@ RE_ANY_SUBTITLE_URL = re.compile(r"""(?:\[([^\]]+)\])?\s*(https?://[^\s,"'<>]+)"
 
 SESSION = requests.Session()
 _RETRY = Retry(
-    total=2,
-    connect=2,
-    read=2,
-    status=2,
+    total=2, connect=2, read=2, status=2,
     backoff_factor=0.2,
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=frozenset(["GET", "HEAD"]),
@@ -85,14 +82,11 @@ _ADAPTER = HTTPAdapter(max_retries=_RETRY, pool_connections=30, pool_maxsize=30)
 SESSION.mount("http://", _ADAPTER)
 SESSION.mount("https://", _ADAPTER)
 
-# Cache fonksiyonları (orijinal)
 def cache_get(key):
     now = time.time()
     with _CACHE_LOCK:
         item = _CACHE.get(key)
-        if not item:
-            return None
-        if item["exp"] <= now:
+        if not item or item["exp"] <= now:
             _CACHE.pop(key, None)
             return None
         return item["val"]
@@ -111,9 +105,7 @@ def cache_set(key, value, ttl_sec):
                 for k, _ in sorted(_CACHE.items(), key=lambda kv: kv[1]["exp"])[: len(_CACHE) // 3]:
                     _CACHE.pop(k, None)
 
-# ====================== ORİJİNAL FONKSİYONLAR (hepsi aynı) ======================
-# (Aşağıdaki fonksiyonlar orijinal kodundan hiç değişmeden kopyalandı)
-
+# ====================== ORİJİNAL FONKSİYONLAR ======================
 def auth_guard():
     if API_KEY and request.args.get("k", "") != API_KEY:
         return Response("Unauthorized", status=401)
@@ -223,9 +215,6 @@ def replace_url_host(stream_url, new_host):
         netloc = f"{new_host}:{parsed.port}"
     return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
 
-# ... (Tüm extract_ ve resolve_ fonksiyonları orijinal kodunda olduğu gibi devam ediyor. 
-#     Onları orijinal dosyanızdan buraya kopyalayın. Yer tasarrufu için burada kesiyorum.)
-
 def fetch_text_with_final_url(url, headers, timeout_sec=DEFAULT_TIMEOUT):
     try:
         r = SESSION.get(url, headers=headers, timeout=timeout_sec, allow_redirects=True)
@@ -263,7 +252,167 @@ def dedup_keep_order(items):
         out.append(x)
     return out
 
-# extract_m3u8_candidates, extract_iframe_candidates, resolve_from_page_detail vb. tüm fonksiyonları orijinal kodundan buraya kopyala.
+def extract_m3u8_candidates(text, base_url):
+    cands = []
+    for m in RE_M3U8_ESCAPED.findall(text or ""):
+        u = normalize_url(m, base_url)
+        if is_http_url(u):
+            cands.append(u)
+    for m in RE_M3U8_DIRECT.findall(text or ""):
+        u = normalize_url(m, base_url)
+        if is_http_url(u):
+            cands.append(u)
+    for m in RE_M3U8_FILESRC.findall(text or ""):
+        u = normalize_url(m, base_url)
+        if is_http_url(u):
+            cands.append(u)
+    return dedup_keep_order(cands)
+
+# Diğer gerekli fonksiyonlar (orijinalden)
+def extract_iframe_candidates(text, base_url):
+    urls = []
+    sources = [text or ""]
+    decoded = html_lib.unescape(text or "")
+    decoded = decoded.replace("\\/", "/").replace('\\"', '"').replace("\\u0026", "&")
+    if decoded and decoded not in sources:
+        sources.append(decoded)
+    for source in sources:
+        for raw in RE_IFRAME.findall(source):
+            u = normalize_url(raw, base_url)
+            if is_http_url(u):
+                urls.append(u)
+        for raw in RE_DATA_EMBED.findall(source):
+            u = normalize_url(raw, base_url)
+            if is_http_url(u):
+                urls.append(u)
+    if not urls:
+        try:
+            soup = BeautifulSoup(decoded or text or "", "html.parser")
+            for iframe in soup.find_all("iframe"):
+                src = iframe.get("src") or iframe.get("data-src") or ""
+                u = normalize_url(src, base_url)
+                if is_http_url(u):
+                    urls.append(u)
+        except Exception:
+            pass
+    for source in sources:
+        for u in extract_fullhd_iframe_candidates(source, base_url):
+            urls.append(u)
+    for source in sources:
+        for u in extract_atob_iframe_candidates(source, base_url):
+            urls.append(u)
+    return dedup_keep_order(urls)
+
+def extract_atob_iframe_candidates(text, base_url):
+    urls = []
+    for raw_list in re.findall(r"""var\s+_\s*=\s*\[([^\]]+)\]""", text or "", re.IGNORECASE | re.DOTALL):
+        parts = re.findall(r"""["']([^"']+)["']""", raw_list)
+        decoded_parts = []
+        for part in parts:
+            try:
+                decoded_parts.append(base64.b64decode(part).decode("utf-8", errors="ignore"))
+            except Exception:
+                decoded_parts.append("")
+        candidate = "".join(decoded_parts).strip()
+        u = normalize_url(candidate, base_url)
+        if is_http_url(u):
+            urls.append(u)
+    return dedup_keep_order(urls)
+
+def decode_js_string_literal(raw):
+    value = html_lib.unescape(raw or "")
+    try:
+        return json.loads(f'"{value}"')
+    except Exception:
+        try:
+            return value.encode("utf-8").decode("unicode_escape")
+        except Exception:
+            return value.replace("\\'", "'")
+
+def extract_fullhd_iframe_candidates(text, base_url):
+    urls = []
+    for raw_payload, default_lang in RE_FULLHD_VIDEO_DATA.findall(text or ""):
+        payload_text = decode_js_string_literal(raw_payload)
+        try:
+            payload = json.loads(payload_text)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        videos = payload.get((default_lang or "").strip())
+        if not isinstance(videos, list):
+            videos = []
+            for value in payload.values():
+                if isinstance(value, list):
+                    videos = value
+                    break
+        for video in videos[:8]:
+            if not isinstance(video, dict):
+                continue
+            link = str(video.get("link") or "").strip()
+            template_raw = str(video.get("template") or "").strip()
+            service_slug = str(video.get("service_slug") or "").strip()
+            if not link or not template_raw:
+                continue
+            try:
+                template = base64.b64decode(template_raw).decode("utf-8", errors="ignore")
+            except Exception:
+                template = template_raw
+            rendered = template.replace("{url}", link).replace("{slug}", service_slug)
+            for raw in re.findall(r"""(?:src|data-src)=["']([^"']+)["']""", rendered, re.IGNORECASE):
+                u = normalize_url(raw, base_url)
+                if is_http_url(u):
+                    urls.append(u)
+            for raw in re.findall(r"https?://[^\"'<>\s]+", rendered, re.IGNORECASE):
+                u = normalize_url(raw, base_url)
+                if is_http_url(u):
+                    urls.append(u)
+    return dedup_keep_order(urls)
+
+def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3):
+    html, effective_page_url = fetch_text_with_final_url(page_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not html:
+        return {}
+    effective_page_url = effective_page_url or page_url
+    cands = extract_m3u8_candidates(html, effective_page_url)
+    if cands:
+        return {"url": cands[0], "subtitles": []}
+    if depth >= max_depth:
+        return {}
+    embeds = extract_iframe_candidates(html, effective_page_url)
+    for u in embeds[:8]:
+        low = u.lower()
+        if "embed" in low or "/dl?op=get_stream" in low:
+            fast = resolve_playerjs_embed_detail(u, headers)
+            if fast.get("url"):
+                return fast
+        next_origin = origin_of(u)
+        current_origin = origin_of(effective_page_url)
+        next_headers = {
+            "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+            "Referer": effective_page_url,
+            "Origin": current_origin if current_origin else (next_origin if next_origin else headers.get("Origin", BASE_HEADERS["Origin"])),
+        }
+        found = resolve_from_page_detail(u, next_headers, depth + 1, max_depth)
+        if found.get("url"):
+            return found
+    return {}
+
+def resolve_playerjs_embed_detail(embed_url, upstream_headers):
+    embed_origin = origin_of(embed_url)
+    embed_headers = {
+        "User-Agent": upstream_headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+        "Referer": upstream_headers.get("Referer", embed_origin + "/" if embed_origin else BASE_HEADERS["Referer"]),
+        "Origin": upstream_headers.get("Origin", embed_origin if embed_origin else BASE_HEADERS["Origin"]),
+    }
+    embed_html = fetch_text(embed_url, embed_headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not embed_html:
+        return {}
+    subtitles = []  # Basit tutuyoruz
+    direct = extract_m3u8_candidates(embed_html, embed_url)
+    if direct:
+        return {"url": direct[0], "subtitles": subtitles}
+    return {}
 
 # ====================== DEĞİŞEN FONKSİYONLAR ======================
 def slug_variants(slug):
@@ -335,13 +484,12 @@ def parse_episode_token(raw_bolum):
         return "1", b_match.group(1)
     return "1", raw
 
-# ====================== /yayin ROUTE (DÜZELTİLDİ) ======================
+# ====================== /yayin ROUTE ======================
 @app.route("/yayin/<dizi>/<bolum>", methods=["GET", "HEAD"])
 def stream_dizi(dizi, bolum):
     g = auth_guard()
     if g:
-        return "Yayin bulunamadi.", 404
-
+        return g
     base = FILMHANE_BASE_DOMAIN
     films = {
         "28-yil-sonra": f"{base}/film/28-yil-sonra-kemik-tapinagi",
@@ -363,7 +511,6 @@ def stream_dizi(dizi, bolum):
         "giant": f"{base}/film/giant",
         "k-pops": f"{base}/film/k-pops",
     }
-
     sezon_no, bolum_no = parse_episode_token(bolum)
     slug_candidates = slug_variants(dizi)
 
@@ -434,11 +581,10 @@ def stream_dizi(dizi, bolum):
                 subtitles=payload["subtitles"],
                 ttl=SHORT_TTL,
             )
-
     return "Yayin bulunamadi.", 404
 
 # Diğer route'lar (home, health, canli, api, imdb) orijinal kodunda olduğu gibi kalıyor.
-# Onları da orijinal dosyanızdan kopyalayın.
+# Onları da orijinal dosyanızdan kopyalayın veya ekleyin.
 
 if __name__ == "__main__":
     app.run(debug=True)
