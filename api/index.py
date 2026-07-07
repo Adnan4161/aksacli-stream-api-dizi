@@ -50,7 +50,6 @@ DEFAULT_TIMEOUT = 10
 SHORT_TTL = 15
 NORMAL_TTL = 30
 STREAM_CACHE_TTL = 300
-CANLITV_CACHE_TTL = 60
 
 FILMHANE_EDGE_DEFAULT_REFERER = "https://x.ag2m4.cfd/"
 FILMHANE_EDGE_DEFAULT_ORIGIN = "https://x.ag2m4.cfd"
@@ -264,6 +263,19 @@ def redirect_light(target_url, ttl=SHORT_TTL):
             "Location": target_url,
             "Access-Control-Allow-Origin": "*",
             "Cache-Control": f"public, max-age=0, s-maxage={max(1, int(ttl))}, stale-while-revalidate=60",
+        },
+    )
+
+
+def redirect_no_store(target_url):
+    return Response(
+        "",
+        status=302,
+        headers={
+            "Location": target_url,
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
         },
     )
 
@@ -2547,17 +2559,11 @@ def proxy_canlitv(channel_id):
     if not channel_id:
         return "Kanal ID eksik.", 400
 
-    ck = f"canlitv:id:{channel_id}"
-    cached = cache_get(ck)
-    if cached:
-        return redirect_light(cached, ttl=SHORT_TTL)
-
     link = fetch_canlitv_stream(channel_id)
     if not link:
         return "Yayin adresi cozulemedi.", 404
 
-    cache_set(ck, link, CANLITV_CACHE_TTL)
-    return redirect_light(link, ttl=SHORT_TTL)
+    return redirect_no_store(link)
 
 
 @app.route("/canli/<kanal>", methods=["GET", "HEAD"])
@@ -2582,6 +2588,11 @@ def stream_canli(kanal):
         "aspor": "https://cdn504.tvkulesi.com/aspor.m3u8?hst=amp.tvkulesi.com&ch=a-spor",
     }
 
+    if kanal in CANLITV_CHANNEL_IDS:
+        link = fetch_canlitv_stream(CANLITV_CHANNEL_IDS[kanal], referer_slug=kanal)
+        if link:
+            return redirect_no_store(link)
+
     ck = f"canli:{kanal}"
     cached = cache_get(ck)
     if cached:
@@ -2594,12 +2605,6 @@ def stream_canli(kanal):
         link = fetch_dogus_stream(dogus[kanal])
         if link:
             cache_set(ck, link, 60)
-            return redirect_light(link, ttl=SHORT_TTL)
-
-    if kanal in CANLITV_CHANNEL_IDS:
-        link = fetch_canlitv_stream(CANLITV_CHANNEL_IDS[kanal], referer_slug=kanal)
-        if link:
-            cache_set(ck, link, CANLITV_CACHE_TTL)
             return redirect_light(link, ttl=SHORT_TTL)
 
     return "Kanal bulunamadi.", 404
