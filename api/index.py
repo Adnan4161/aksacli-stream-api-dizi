@@ -37,7 +37,6 @@ HDFILMIZLETO_BASE_DOMAIN = os.getenv("HDFILMIZLETO_BASE_DOMAIN", "https://www.hd
 FILMMAKINESI_BASE_DOMAIN = os.getenv("FILMMAKINESI_BASE_DOMAIN", "https://filmmakinesi.to").rstrip("/")
 FULLHDFILMIZLESENE_BASE_DOMAIN = os.getenv("FULLHDFILMIZLESENE_BASE_DOMAIN", "https://www.fullhdfilmizlesene.life").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
-CANLITV_BASE_DOMAIN = os.getenv("CANLITV_BASE_DOMAIN", "https://www.canlitv.diy").rstrip("/")
 
 _ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
 PROXY_ALLOWED_HOSTS = {
@@ -55,11 +54,6 @@ FILMHANE_EDGE_DEFAULT_REFERER = "https://x.ag2m4.cfd/"
 FILMHANE_EDGE_DEFAULT_ORIGIN = "https://x.ag2m4.cfd"
 UK_TRAFFIC_FALLBACK_PREFIXES = ("sn12", "u2ks", "j2mx")
 UK_TRAFFIC_BAD_PREFIXES = ("qp",)
-CANLITV_CHANNEL_IDS = {
-    "yaban-tv": "12044",
-    "yabantv": "12044",
-    "yaban": "12044",
-}
 
 # In-memory cache (best effort)
 _CACHE = {}
@@ -263,19 +257,6 @@ def redirect_light(target_url, ttl=SHORT_TTL):
             "Location": target_url,
             "Access-Control-Allow-Origin": "*",
             "Cache-Control": f"public, max-age=0, s-maxage={max(1, int(ttl))}, stale-while-revalidate=60",
-        },
-    )
-
-
-def redirect_no_store(target_url):
-    return Response(
-        "",
-        status=302,
-        headers={
-            "Location": target_url,
-            "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
         },
     )
 
@@ -2382,24 +2363,6 @@ def fetch_dogus_stream(landing_url):
     return resolve_from_page(landing_url, headers=headers, max_depth=1)
 
 
-def fetch_canlitv_stream(channel_id, referer_slug=""):
-    channel_id = str(channel_id or "").strip()
-    if not channel_id:
-        return ""
-
-    player_url = f"{CANLITV_BASE_DOMAIN}/player/index.php?id={quote(channel_id)}&mobile=0"
-    referer_url = f"{CANLITV_BASE_DOMAIN}/{referer_slug.strip('/')}" if referer_slug else CANLITV_BASE_DOMAIN + "/"
-    headers = build_page_headers(player_url, referer_url=referer_url)
-    html = fetch_text(player_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
-    if not html:
-        return ""
-
-    cands = extract_jwplayer_file_candidates(html, player_url)
-    if not cands:
-        cands = extract_m3u8_candidates(html, player_url)
-    return cands[0] if cands else ""
-
-
 @app.route("/", methods=["GET", "HEAD"])
 def home():
     return f"Aksacli Stream API {VERSION} - redirect-only quota-safe"
@@ -2549,23 +2512,6 @@ def proxy_sup():
     )
 
 
-@app.route("/canli/canlitv/<channel_id>.m3u8", methods=["GET", "HEAD"])
-def proxy_canlitv(channel_id):
-    g = auth_guard()
-    if g:
-        return g
-
-    channel_id = (channel_id or "").strip()
-    if not channel_id:
-        return "Kanal ID eksik.", 400
-
-    link = fetch_canlitv_stream(channel_id)
-    if not link:
-        return "Yayin adresi cozulemedi.", 404
-
-    return redirect_no_store(link)
-
-
 @app.route("/canli/<kanal>", methods=["GET", "HEAD"])
 def stream_canli(kanal):
     g = auth_guard()
@@ -2573,8 +2519,6 @@ def stream_canli(kanal):
         return g
 
     kanal = (kanal or "").strip().lower()
-    if kanal.endswith(".m3u8"):
-        kanal = kanal[:-5]
 
     dogus = {
         "dmax": "https://www.dmax.com.tr/canli-izle",
@@ -2587,11 +2531,6 @@ def stream_canli(kanal):
         "ahaber": "https://cdn504.tvkulesi.com/ahaber.m3u8?hst=amp.tvkulesi.com&ch=a-haber",
         "aspor": "https://cdn504.tvkulesi.com/aspor.m3u8?hst=amp.tvkulesi.com&ch=a-spor",
     }
-
-    if kanal in CANLITV_CHANNEL_IDS:
-        link = fetch_canlitv_stream(CANLITV_CHANNEL_IDS[kanal], referer_slug=kanal)
-        if link:
-            return redirect_no_store(link)
 
     ck = f"canli:{kanal}"
     cached = cache_get(ck)
