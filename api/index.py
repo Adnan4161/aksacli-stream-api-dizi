@@ -2261,9 +2261,6 @@ def source_order_for_yayin(slug_candidates):
     if re.search(r"-fm\d+$", primary):
         return ["filmmakinesi"] + sources + [source for source in optional_sources if source != "filmmakinesi"]
 
-    if primary.endswith("-izle"):
-        return ["hdizipal", "filmhane", "fullhd"] + optional_sources
-
     return sources + optional_sources
 
 
