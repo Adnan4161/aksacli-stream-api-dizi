@@ -1825,6 +1825,63 @@ def decrypt_cryptojs_aes_json(encrypted_json, passphrase):
         return None
 
 
+def parse_js_string_literal(text, start):
+    text = text or ""
+    i = start
+    while i < len(text) and text[i].isspace():
+        i += 1
+    if i >= len(text) or text[i] not in ("'", '"'):
+        return None, start
+
+    quote = text[i]
+    i += 1
+    out = []
+    escaped = False
+    while i < len(text):
+        ch = text[i]
+        if escaped:
+            if ch == "n":
+                out.append("\n")
+            elif ch == "r":
+                out.append("\r")
+            elif ch == "t":
+                out.append("\t")
+            else:
+                out.append(ch)
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == quote:
+            return "".join(out), i + 1
+        else:
+            out.append(ch)
+        i += 1
+
+    return None, start
+
+
+def extract_beplayer_call(html):
+    html = html or ""
+    for m in re.finditer(r"bePlayer\s*\(", html, re.IGNORECASE):
+        pos = m.end()
+        passphrase, pos = parse_js_string_literal(html, pos)
+        if passphrase is None:
+            continue
+
+        while pos < len(html) and html[pos].isspace():
+            pos += 1
+        if pos >= len(html) or html[pos] != ",":
+            continue
+
+        encrypted_json, pos = parse_js_string_literal(html, pos + 1)
+        if encrypted_json is None:
+            continue
+
+        return passphrase, encrypted_json
+
+    return None, None
+
+
 def resolve_hotstream_embed_detail(embed_url, upstream_headers, embed_html=None):
     embed_origin = origin_of(embed_url)
     embed_headers = {
@@ -1846,11 +1903,11 @@ def resolve_hotstream_embed_detail(embed_url, upstream_headers, embed_html=None)
             "subtitles": [],
         }
 
-    m = RE_BEPLAYER_CALL.search(html)
-    if not m:
+    passphrase, encrypted_json = extract_beplayer_call(html)
+    if not passphrase or not encrypted_json:
         return {}
 
-    params = decrypt_cryptojs_aes_json(m.group(2), m.group(1))
+    params = decrypt_cryptojs_aes_json(encrypted_json, passphrase)
     if not isinstance(params, dict):
         return {}
 
