@@ -1177,6 +1177,20 @@ def is_hdfilmizleto_stream_host(url):
     return host == "p1.photofunny.org" or host.endswith(".photofunny.org")
 
 
+def is_hotstream_playlist_url(url):
+    try:
+        parsed = urlparse(url or "")
+        host = (parsed.hostname or "").lower()
+        path = (parsed.path or "").lower()
+    except Exception:
+        return False
+    return host == "hotstream.club" and (
+        path.startswith("/list/")
+        or path.startswith("/m3u/")
+        or path.endswith(".m3u8")
+    )
+
+
 def normalize_hdfilmizleto_media_url(url):
     parsed = urlparse(url or "")
     host = (parsed.hostname or "").lower()
@@ -1221,6 +1235,22 @@ def hdfilmizleto_proxy_url(target_url, referer_url):
     )
 
 
+def hotstream_proxy_url(target_url, referer_url):
+    if not is_http_url(target_url) or not is_hotstream_playlist_url(target_url):
+        return target_url
+
+    root = request.url_root.rstrip("/") if request else ""
+    if not root:
+        return target_url
+
+    ref = (referer_url or "").strip() or "https://hotstream.club/"
+    return (
+        f"{root}/hotstream/playlist.m3u8"
+        f"?url={quote(target_url, safe='')}"
+        f"&ref={quote(ref, safe='')}"
+    )
+
+
 def rewrite_hdfilmcehennemi_playlist(content, playlist_url, referer_url):
     def rewrite_playlist_reference(value):
         absolute = normalize_url(urljoin(playlist_url, value), playlist_url)
@@ -1257,6 +1287,37 @@ def rewrite_hdfilmizleto_playlist(content, playlist_url, referer_url):
         absolute = normalize_hdfilmizleto_media_url(normalize_url(urljoin(playlist_url, value), playlist_url))
         if is_http_url(absolute) and ".m3u8" in absolute.lower() and is_hdfilmizleto_stream_host(absolute):
             return hdfilmizleto_proxy_url(absolute, referer_url)
+        return absolute if is_http_url(absolute) else value
+
+    out = []
+    for raw_line in (content or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            out.append(raw_line)
+            continue
+
+        if line.startswith("#"):
+            if "URI=" in line:
+                rewritten_line = re.sub(
+                    r"""URI=(["'])([^"']+)(["'])""",
+                    lambda m: f"URI={m.group(1)}{rewrite_playlist_reference(m.group(2))}{m.group(3)}",
+                    raw_line,
+                )
+                out.append(rewritten_line)
+            else:
+                out.append(raw_line)
+            continue
+
+        out.append(rewrite_playlist_reference(line))
+
+    return "\n".join(out) + "\n"
+
+
+def rewrite_hotstream_playlist(content, playlist_url, referer_url):
+    def rewrite_playlist_reference(value):
+        absolute = normalize_url(urljoin(playlist_url, value), playlist_url)
+        if is_hotstream_playlist_url(absolute):
+            return hotstream_proxy_url(absolute, referer_url)
         return absolute if is_http_url(absolute) else value
 
     out = []
@@ -1923,9 +1984,10 @@ def resolve_hotstream_embed_detail(embed_url, upstream_headers, embed_html=None)
     # Hotstream intermittently returns 404 for /list when the JWPlayer wildcard
     # Accept header is not preserved.
     playback_headers["Accept"] = "*/*"
+    client_url = hotstream_proxy_url(stream_url, embed_url)
     return {
-        "url": stream_url,
-        "headers": playback_headers,
+        "url": client_url,
+        "headers": {} if client_url != stream_url else playback_headers,
         "subtitles": [],
     }
 
@@ -2666,6 +2728,54 @@ def proxy_hdfilmizleto_playlist():
 
     final_url = response.url or target_url
     rewritten = rewrite_hdfilmizleto_playlist(body, final_url, referer_url)
+    return Response(
+        rewritten,
+        status=200,
+        headers={
+            "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=0, s-maxage=15, stale-while-revalidate=60",
+        },
+    )
+
+
+@app.route("/hotstream/playlist.m3u8", methods=["GET", "HEAD"])
+def proxy_hotstream_playlist():
+    target_url = unquote((request.args.get("url") or "").strip())
+    referer_url = unquote((request.args.get("ref") or "").strip())
+    if not is_http_url(target_url):
+        return "Gecersiz URL", 400
+    if not is_hotstream_playlist_url(target_url):
+        return "Kaynak desteklenmiyor.", 400
+
+    embed_origin = origin_of(referer_url) or "https://hotstream.club"
+    headers = {
+        "User-Agent": "libmpv",
+        "Accept": "*/*",
+        "Referer": referer_url or (embed_origin + "/"),
+        "Origin": embed_origin,
+    }
+
+    try:
+        response = SESSION.get(
+            target_url,
+            headers=headers,
+            timeout=DEFAULT_TIMEOUT,
+            allow_redirects=True,
+        )
+    except Exception:
+        return "Playlist alinamadi.", 502
+
+    if response.status_code >= 400:
+        return "Playlist bulunamadi.", response.status_code
+
+    response.encoding = response.encoding or "utf-8"
+    body = response.text or ""
+    if not body.lstrip().startswith("#EXTM3U"):
+        return "Gecersiz playlist.", 502
+
+    final_url = response.url or target_url
+    rewritten = rewrite_hotstream_playlist(body, final_url, referer_url)
     return Response(
         rewritten,
         status=200,
