@@ -1,5 +1,6 @@
 from flask import Flask, Response, request
 import base64
+import hashlib
 import html as html_lib
 import json
 import os
@@ -12,6 +13,13 @@ import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+try:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+except Exception:
+    Cipher = None
+    algorithms = None
+    modes = None
 
 app = Flask(__name__)
 
@@ -36,6 +44,7 @@ HDFILMCEHENNEMI_EMBED_DOMAIN = os.getenv("HDFILMCEHENNEMI_EMBED_DOMAIN", "https:
 HDFILMIZLETO_BASE_DOMAIN = os.getenv("HDFILMIZLETO_BASE_DOMAIN", "https://www.hdfilmizle.to").rstrip("/")
 FILMMAKINESI_BASE_DOMAIN = os.getenv("FILMMAKINESI_BASE_DOMAIN", "https://filmmakinesi.to").rstrip("/")
 FULLHDFILMIZLESENE_BASE_DOMAIN = os.getenv("FULLHDFILMIZLESENE_BASE_DOMAIN", "https://www.fullhdfilmizlesene.life").rstrip("/")
+TEKPARCAIZLE_BASE_DOMAIN = os.getenv("TEKPARCAIZLE_BASE_DOMAIN", "https://tekparcaizle.com").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 
 _ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
@@ -71,6 +80,7 @@ RE_VIDMOXY_ENCODED_VALUE = re.compile(
 )
 RE_DAION = re.compile(r"[\"'](https?:?\\?/\\?/[^\s\"'<>]*?daioncdn[^\s\"'<>]*?\.m3u8[^\s\"'<>]*?)[\"']", re.IGNORECASE)
 RE_IFRAME = re.compile(r"<iframe[^>]+(?:src|data-src)=[\"']([^\"']+)[\"']", re.IGNORECASE)
+RE_LITESPEED_IFRAME_SRC = re.compile(r"""data-litespeed-src=["']([^"']+)["']""", re.IGNORECASE)
 RE_DATA_EMBED = re.compile(r"data-(?:hhs|frame)=[\"']([^\"']+)[\"']", re.IGNORECASE)
 RE_DATA_VIDEO_URL = re.compile(r"""data-video[_-]?url=["']([^"']+)["']""", re.IGNORECASE)
 RE_FULLHD_VIDEO_DATA = re.compile(
@@ -93,6 +103,7 @@ RE_VIDRAME_DD = re.compile(r"""EE\.dd\(\s*["']([^"']+)["']\s*\)""", re.IGNORECAS
 RE_FULLHDFILMIZLESENE_SCX = re.compile(r"""var\s+scx\s*=\s*(\{.*?\})\s*;""", re.IGNORECASE | re.DOTALL)
 RE_RAPIDVID_AV_FILE = re.compile(r"""["']file["']\s*:\s*av\(\s*["']([^"']+)["']\s*\)""", re.IGNORECASE | re.DOTALL)
 RE_PLAYER_CONFIGS = re.compile(r"""playerConfigs\s*=\s*(\{.*?\})\s*;""", re.IGNORECASE | re.DOTALL)
+RE_BEPLAYER_CALL = re.compile(r"""bePlayer\(\s*["']([^"']+)["']\s*,\s*["']((?:\\["']|[^"'])*)["']""", re.IGNORECASE | re.DOTALL)
 
 HDFILMCEHENNEMI_KNOWN_EMBEDS = {
     "kac-run-izle-hdf-6": "cvoodwhGycV",
@@ -501,6 +512,11 @@ def extract_iframe_candidates(text, base_url):
             if is_http_url(u):
                 urls.append(u)
 
+        for raw in RE_LITESPEED_IFRAME_SRC.findall(source):
+            u = normalize_url(raw, base_url)
+            if is_http_url(u):
+                urls.append(u)
+
         for raw in RE_DATA_EMBED.findall(source):
             u = normalize_url(raw, base_url)
             if is_http_url(u):
@@ -515,10 +531,11 @@ def extract_iframe_candidates(text, base_url):
         try:
             soup = BeautifulSoup(decoded or text or "", "html.parser")
             for iframe in soup.find_all("iframe"):
-                src = iframe.get("src") or iframe.get("data-src") or ""
-                u = normalize_url(src, base_url)
-                if is_http_url(u):
-                    urls.append(u)
+                for attr in ("data-litespeed-src", "data-src", "src"):
+                    src = iframe.get(attr) or ""
+                    u = normalize_url(src, base_url)
+                    if is_http_url(u):
+                        urls.append(u)
         except Exception:
             pass
 
@@ -940,6 +957,17 @@ def is_sobreatsesuyp_embed_url(url):
         return False
 
     return host.endswith("sobreatsesuyp.com") and "/iframe" in path
+
+
+def is_hotstream_embed_url(url):
+    try:
+        p = urlparse(url or "")
+        host = (p.hostname or "").lower()
+        path = (p.path or "").lower()
+    except Exception:
+        return False
+
+    return host == "hotstream.club" and "/embed/" in path
 
 
 def is_vidmoxy_embed_url(url):
@@ -1761,6 +1789,90 @@ def resolve_hlszone_embed_detail(embed_url, upstream_headers, embed_html=None):
     return {}
 
 
+def cryptojs_evp_bytes_to_key(password, salt, key_len=32, iv_len=16):
+    out = b""
+    prev = b""
+    while len(out) < key_len + iv_len:
+        prev = hashlib.md5(prev + password + salt).digest()
+        out += prev
+    return out[:key_len], out[key_len:key_len + iv_len]
+
+
+def pkcs7_unpad(data):
+    if not data:
+        return data
+    pad = data[-1]
+    if pad < 1 or pad > 16:
+        return data
+    if data[-pad:] != bytes([pad]) * pad:
+        return data
+    return data[:-pad]
+
+
+def decrypt_cryptojs_aes_json(encrypted_json, passphrase):
+    if Cipher is None or algorithms is None or modes is None:
+        return None
+
+    try:
+        payload = json.loads((encrypted_json or "").replace("\\'", "'"))
+        ciphertext = base64.b64decode(payload.get("ct") or "")
+        salt = bytes.fromhex(payload.get("s") or "")
+        key, iv = cryptojs_evp_bytes_to_key((passphrase or "").encode("utf-8"), salt)
+        decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+        plaintext = pkcs7_unpad(decryptor.update(ciphertext) + decryptor.finalize())
+        return json.loads(plaintext.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def resolve_hotstream_embed_detail(embed_url, upstream_headers, embed_html=None):
+    embed_origin = origin_of(embed_url)
+    embed_headers = {
+        "User-Agent": upstream_headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+        "Referer": upstream_headers.get("Referer", embed_origin + "/" if embed_origin else BASE_HEADERS["Referer"]),
+        "Origin": upstream_headers.get("Origin", embed_origin if embed_origin else BASE_HEADERS["Origin"]),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    html = embed_html if embed_html is not None else fetch_text(embed_url, embed_headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not html:
+        return {}
+
+    direct = extract_m3u8_candidates(html, embed_url)
+    if direct:
+        return {
+            "url": direct[0],
+            "headers": make_playback_headers(direct[0], referer_hint=embed_url, origin_hint=embed_origin),
+            "subtitles": [],
+        }
+
+    m = RE_BEPLAYER_CALL.search(html)
+    if not m:
+        return {}
+
+    params = decrypt_cryptojs_aes_json(m.group(2), m.group(1))
+    if not isinstance(params, dict):
+        return {}
+
+    stream_url = normalize_url(str(params.get("video_location") or ""), embed_url)
+    if not is_http_url(stream_url):
+        return {}
+
+    playback_headers = make_playback_headers(
+        stream_url=stream_url,
+        referer_hint=embed_url,
+        origin_hint=embed_origin,
+    )
+    # Hotstream intermittently returns 404 for /list when the JWPlayer wildcard
+    # Accept header is not preserved.
+    playback_headers["Accept"] = "*/*"
+    return {
+        "url": stream_url,
+        "headers": playback_headers,
+        "subtitles": [],
+    }
+
+
 def resolve_playerjs_embed_detail(embed_url, upstream_headers):
     embed_origin = origin_of(embed_url)
     embed_headers = {
@@ -1886,6 +1998,11 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None
         if fast.get("url"):
             return fast
 
+    if is_hotstream_embed_url(effective_page_url):
+        fast = resolve_hotstream_embed_detail(effective_page_url, headers, embed_html=html)
+        if fast.get("url"):
+            return fast
+
     cands = extract_m3u8_candidates(html, effective_page_url)
     if cands:
         return {"url": cands[0], "subtitles": []}
@@ -1957,6 +2074,15 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None
                 "Referer": effective_page_url,
                 "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
             }, trace=trace)
+            if fast.get("url"):
+                return fast
+
+        if is_hotstream_embed_url(u):
+            fast = resolve_hotstream_embed_detail(u, {
+                "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+                "Referer": effective_page_url,
+                "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
+            })
             if fast.get("url"):
                 return fast
 
@@ -2232,6 +2358,25 @@ def build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no):
     return dedup_keep_order(targets)
 
 
+def build_tekparcaizle_targets(slug, sezon_no, bolum_no):
+    base = TEKPARCAIZLE_BASE_DOMAIN
+    clean_slug = (slug or "").strip().strip("/")
+    if not clean_slug:
+        return []
+
+    variants = [clean_slug]
+    if clean_slug.endswith("-izle"):
+        variants.append(clean_slug[:-5])
+
+    targets = []
+    for variant in dedup_keep_order([v.strip("-/") for v in variants if v.strip("-/")]):
+        targets.append(f"{base}/film11/{variant}/")
+        targets.append(f"{base}/film11/{variant}")
+        targets.append(f"{base}/film/{variant}/")
+        targets.append(f"{base}/film/{variant}")
+    return targets
+
+
 def source_order_for_yayin(slug_candidates):
     hint = (request.args.get("src") or request.args.get("source") or "").strip().lower()
     source_aliases = {
@@ -2243,10 +2388,12 @@ def source_order_for_yayin(slug_candidates):
         "filmmakinesi.to": "filmmakinesi",
         "fullhdfilmizlesene.life": "fullhdfilmizlesene",
         "fullhdfilmizlesene": "fullhdfilmizlesene",
+        "tekparcaizle.com": "tekparcaizle",
+        "tekparcaizle": "tekparcaizle",
     }
     hint = source_aliases.get(hint, hint)
     sources = ["filmhane", "fullhd", "hdizipal"]
-    optional_sources = ["hdfilmizleto", "filmmakinesi", "fullhdfilmizlesene"]
+    optional_sources = ["hdfilmizleto", "filmmakinesi", "fullhdfilmizlesene", "tekparcaizle"]
     if hint in sources + optional_sources:
         return [hint] + [source for source in sources + optional_sources if source != hint]
 
@@ -2685,6 +2832,7 @@ def stream_dizi(dizi, bolum):
     hdfilmizleto_candidates = []
     filmmakinesi_candidates = []
     fullhdfilmizlesene_candidates = []
+    tekparcaizle_candidates = []
     for slug in slug_candidates:
         if slug in films:
             mapped_candidates.append(films[slug])
@@ -2711,6 +2859,9 @@ def stream_dizi(dizi, bolum):
     for slug in slug_candidates:
         fullhdfilmizlesene_candidates.extend(build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no))
 
+    for slug in slug_candidates:
+        tekparcaizle_candidates.extend(build_tekparcaizle_targets(slug, sezon_no, bolum_no))
+
     source_candidates = {
         "filmhane": filmhane_candidates,
         "fullhd": fullhd_candidates,
@@ -2719,6 +2870,7 @@ def stream_dizi(dizi, bolum):
         "hdfilmizleto": hdfilmizleto_candidates,
         "filmmakinesi": filmmakinesi_candidates,
         "fullhdfilmizlesene": fullhdfilmizlesene_candidates,
+        "tekparcaizle": tekparcaizle_candidates,
     }
     source_order = source_order_for_yayin(slug_candidates)
     source_lookup = {}
