@@ -1328,6 +1328,8 @@ def rewrite_hotstream_playlist(content, playlist_url, referer_url):
             continue
 
         if line.startswith("#"):
+            if line.startswith("#EXT-X-I-FRAME-STREAM-INF"):
+                continue
             if "URI=" in line:
                 rewritten_line = re.sub(
                     r"""URI=(["'])([^"']+)(["'])""",
@@ -1987,7 +1989,7 @@ def resolve_hotstream_embed_detail(embed_url, upstream_headers, embed_html=None)
     client_url = hotstream_proxy_url(stream_url, embed_url)
     return {
         "url": client_url,
-        "headers": {} if client_url != stream_url else playback_headers,
+        "headers": playback_headers,
         "subtitles": [],
     }
 
@@ -2890,11 +2892,13 @@ def resolve_universal():
     detail = resolve_from_page_detail(target_url, headers=headers, max_depth=3)
     stream_url = detail.get("url") or ""
     if stream_url:
-        playback_headers = detail.get("headers") or make_playback_headers(
-            stream_url=stream_url,
-            referer_hint=dom + "/" if dom else "",
-            origin_hint=dom
-        )
+        playback_headers = detail.get("headers")
+        if playback_headers is None:
+            playback_headers = make_playback_headers(
+                stream_url=stream_url,
+                referer_hint=dom + "/" if dom else "",
+                origin_hint=dom
+            )
         payload = {
             "url": stream_url,
             "headers": playback_headers,
@@ -3122,7 +3126,9 @@ def stream_dizi(dizi, bolum):
                 "trace": trace[-12:],
             })
         if stream_url:
-            playback_headers = detail.get("headers") or make_playback_headers(stream_url=stream_url)
+            playback_headers = detail.get("headers")
+            if playback_headers is None:
+                playback_headers = make_playback_headers(stream_url=stream_url)
             payload = {
                 "url": stream_url,
                 "headers": playback_headers,
