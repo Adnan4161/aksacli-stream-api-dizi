@@ -15,11 +15,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 try:
-    from curl_cffi import requests as CURL_REQUESTS
-except Exception:
-    CURL_REQUESTS = None
-
-try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 except Exception:
     Cipher = None
@@ -28,7 +23,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V205"
+VERSION = "V206"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -417,55 +412,9 @@ def probe_stream_url(stream_url):
         return False
 
 
-def fetch_text_with_curl_impersonation(url, headers, timeout_sec=DEFAULT_TIMEOUT):
-    if CURL_REQUESTS is None:
-        return "", url, {"client": "curl_cffi", "error": "unavailable"}
-
-    diagnostic = {"client": "curl_cffi", "error": "not_attempted"}
-    for impersonate in ("chrome124", "chrome120", "chrome110", "chrome"):
-        try:
-            r = CURL_REQUESTS.get(
-                url,
-                headers=headers or {},
-                timeout=timeout_sec,
-                allow_redirects=True,
-                impersonate=impersonate,
-            )
-            final_url = r.url or url
-            content_type = r.headers.get("content-type") or ""
-            text = r.text or ""
-            diagnostic = {
-                "client": f"curl_cffi:{impersonate}",
-                "status": r.status_code,
-                "final": final_url,
-                "content_type": content_type[:80],
-                "length": len(text),
-            }
-            if r.status_code < 400 and text:
-                return text, final_url, diagnostic
-        except Exception as exc:
-            diagnostic = {
-                "client": f"curl_cffi:{impersonate}",
-                "error": exc.__class__.__name__,
-                "message": str(exc)[:180],
-            }
-
-    return "", url, diagnostic
-
-
 def fetch_text_with_diagnostics(url, headers, timeout_sec=DEFAULT_TIMEOUT):
     final_url = url
     diagnostic = {"attempts": 0}
-    if is_filmmakinesi_site_url(url):
-        text, final_url, curl_info = fetch_text_with_curl_impersonation(
-            url,
-            headers,
-            timeout_sec=timeout_sec,
-        )
-        if text:
-            return text, final_url, curl_info
-        diagnostic["curl_cffi"] = curl_info
-
     attempts = [headers or {}]
     if headers and headers.get("Origin"):
         relaxed_headers = dict(headers)
@@ -479,7 +428,6 @@ def fetch_text_with_diagnostics(url, headers, timeout_sec=DEFAULT_TIMEOUT):
             final_url = r.url or final_url
             content_type = r.headers.get("content-type") or ""
             diagnostic = {
-                **({"curl_cffi": diagnostic.get("curl_cffi")} if diagnostic.get("curl_cffi") else {}),
                 "client": "requests",
                 "attempts": diagnostic["attempts"],
                 "status": r.status_code,
@@ -2699,14 +2647,12 @@ def source_order_for_yayin(slug_candidates):
         # its HLS media list points to JPEG-like segments that ExoPlayer cannot parse.
         "hdfilmizle": "hdfilmizleto",
         "hdfilmizle.to": "hdfilmizleto",
-        "film-makinesi": "filmmakinesi",
-        "filmmakinesi.to": "filmmakinesi",
         "fullhdfilmizlesene.life": "fullhdfilmizlesene",
         "fullhdfilmizlesene": "fullhdfilmizlesene",
     }
     hint = source_aliases.get(hint, hint)
     sources = ["filmhane", "fullhd", "hdizipal"]
-    optional_sources = ["hdfilmizleto", "filmmakinesi", "fullhdfilmizlesene"]
+    optional_sources = ["hdfilmizleto", "fullhdfilmizlesene"]
     if hint in sources + optional_sources:
         return [hint] + [source for source in sources + optional_sources if source != hint]
 
@@ -2719,7 +2665,7 @@ def source_order_for_yayin(slug_candidates):
         return ["fullhdfilmizlesene"] + sources + [source for source in optional_sources if source != "fullhdfilmizlesene"]
 
     if re.search(r"-fm\d+$", primary):
-        return ["filmmakinesi"]
+        return []
 
     return sources + optional_sources
 
