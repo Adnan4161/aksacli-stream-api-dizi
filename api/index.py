@@ -23,7 +23,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V203"
+VERSION = "V204"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -412,8 +412,9 @@ def probe_stream_url(stream_url):
         return False
 
 
-def fetch_text_with_final_url(url, headers, timeout_sec=DEFAULT_TIMEOUT):
+def fetch_text_with_diagnostics(url, headers, timeout_sec=DEFAULT_TIMEOUT):
     final_url = url
+    diagnostic = {"attempts": 0}
     attempts = [headers or {}]
     if headers and headers.get("Origin"):
         relaxed_headers = dict(headers)
@@ -421,18 +422,37 @@ def fetch_text_with_final_url(url, headers, timeout_sec=DEFAULT_TIMEOUT):
         attempts.append(relaxed_headers)
 
     for attempt_headers in attempts:
+        diagnostic["attempts"] = diagnostic.get("attempts", 0) + 1
         try:
             r = SESSION.get(url, headers=attempt_headers, timeout=timeout_sec, allow_redirects=True)
             final_url = r.url or final_url
+            content_type = r.headers.get("content-type") or ""
+            diagnostic = {
+                "attempts": diagnostic["attempts"],
+                "status": r.status_code,
+                "final": final_url,
+                "content_type": content_type[:80],
+            }
             if r.status_code >= 400:
                 continue
             r.encoding = r.encoding or "utf-8"
             text = r.text or ""
+            diagnostic["length"] = len(text)
             if text:
-                return text, final_url
-        except Exception:
+                return text, final_url, diagnostic
+        except Exception as exc:
+            diagnostic = {
+                "attempts": diagnostic.get("attempts", 0),
+                "error": exc.__class__.__name__,
+                "message": str(exc)[:180],
+            }
             continue
-    return "", final_url
+    return "", final_url, diagnostic
+
+
+def fetch_text_with_final_url(url, headers, timeout_sec=DEFAULT_TIMEOUT):
+    text, final_url, _ = fetch_text_with_diagnostics(url, headers, timeout_sec=timeout_sec)
+    return text, final_url
 
 
 def fetch_text(url, headers, timeout_sec=DEFAULT_TIMEOUT):
@@ -2188,10 +2208,12 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None
     if hdf_known.get("url"):
         return hdf_known
 
-    html, effective_page_url = fetch_text_with_final_url(page_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    html, effective_page_url, fetch_info = fetch_text_with_diagnostics(page_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
     if not html:
         if trace is not None:
-            trace.append({"stage": "page_fetch", "depth": depth, "url": page_url, "ok": False, "reason": "empty_html"})
+            entry = {"stage": "page_fetch", "depth": depth, "url": page_url, "ok": False, "reason": "empty_html"}
+            entry.update(fetch_info or {})
+            trace.append(entry)
         return {}
     effective_page_url = effective_page_url or page_url
     if trace is not None:
@@ -2450,6 +2472,11 @@ def parse_episode_token(raw_bolum):
     return "1", raw
 
 
+def is_explicit_series_episode_token(raw_bolum):
+    raw = (raw_bolum or "").strip()
+    return bool(re.match(r"(?i)^s\s*\d+\s*[be]\s*\d+$", raw))
+
+
 def slug_variants(slug):
     value = (slug or "").strip().strip("/")
     if not value:
@@ -2555,7 +2582,7 @@ def build_hdfilmizleto_targets(slug, sezon_no, bolum_no):
     return targets
 
 
-def build_filmmakinesi_targets(slug, sezon_no, bolum_no):
+def build_filmmakinesi_targets(slug, sezon_no, bolum_no, prefer_series=False):
     base = FILMMAKINESI_BASE_DOMAIN
     clean_slug = (slug or "").strip().strip("/")
     if not clean_slug:
@@ -2567,10 +2594,20 @@ def build_filmmakinesi_targets(slug, sezon_no, bolum_no):
 
     targets = []
     for variant in dedup_keep_order(variants):
-        targets.append(f"{base}/film/{variant}/")
-        targets.append(f"{base}/film/{variant}")
-        targets.append(f"{base}/dizi/{variant}/sezon-{sezon_no}/bolum-{bolum_no}/")
-        targets.append(f"{base}/dizi/{variant}/sezon-{sezon_no}/bolum-{bolum_no}")
+        series_targets = [
+            f"{base}/dizi/{variant}/sezon-{sezon_no}/bolum-{bolum_no}/",
+            f"{base}/dizi/{variant}/sezon-{sezon_no}/bolum-{bolum_no}",
+        ]
+        movie_targets = [
+            f"{base}/film/{variant}/",
+            f"{base}/film/{variant}",
+        ]
+
+        if prefer_series:
+            targets.extend(series_targets)
+        else:
+            targets.extend(movie_targets)
+            targets.extend(series_targets)
     return targets
 
 
@@ -2626,7 +2663,7 @@ def source_order_for_yayin(slug_candidates):
         return ["fullhdfilmizlesene"] + sources + [source for source in optional_sources if source != "fullhdfilmizlesene"]
 
     if re.search(r"-fm\d+$", primary):
-        return ["filmmakinesi"] + sources + [source for source in optional_sources if source != "filmmakinesi"]
+        return ["filmmakinesi"]
 
     return sources + optional_sources
 
@@ -3214,6 +3251,7 @@ def stream_dizi(dizi, bolum):
     }
 
     sezon_no, bolum_no = parse_episode_token(bolum)
+    prefer_series_sources = is_explicit_series_episode_token(bolum)
     slug_candidates = slug_variants(dizi)
 
     # Map varsa onu oncele. Sonra kaynak sirasini slug/source ipucuna gore ayarla.
@@ -3246,7 +3284,14 @@ def stream_dizi(dizi, bolum):
         hdfilmizleto_candidates.extend(build_hdfilmizleto_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
-        filmmakinesi_candidates.extend(build_filmmakinesi_targets(slug, sezon_no, bolum_no))
+        filmmakinesi_candidates.extend(
+            build_filmmakinesi_targets(
+                slug,
+                sezon_no,
+                bolum_no,
+                prefer_series=prefer_series_sources,
+            )
+        )
 
     for slug in slug_candidates:
         fullhdfilmizlesene_candidates.extend(build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no))
