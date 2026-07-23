@@ -23,7 +23,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V206"
+VERSION = "V207"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -39,6 +39,7 @@ API_KEY = os.getenv("API_KEY", "").strip()
 FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.shop").rstrip("/")
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
 HDIZIPAL_BASE_DOMAIN = os.getenv("HDIZIPAL_BASE_DOMAIN", "https://hdizipal.com").rstrip("/")
+DIZIPALBID_BASE_DOMAIN = os.getenv("DIZIPALBID_BASE_DOMAIN", "https://dizipal.bid").rstrip("/")
 HDFILMCEHENNEMI_BASE_DOMAIN = os.getenv("HDFILMCEHENNEMI_BASE_DOMAIN", "https://www.hdfilmcehennemi.nl").rstrip("/")
 HDFILMCEHENNEMI_EMBED_DOMAIN = os.getenv("HDFILMCEHENNEMI_EMBED_DOMAIN", "https://hdfilmcehennemi.mobi").rstrip("/")
 HDFILMIZLETO_BASE_DOMAIN = os.getenv("HDFILMIZLETO_BASE_DOMAIN", "https://www.hdfilmizle.to").rstrip("/")
@@ -2541,6 +2542,25 @@ def build_hdizipal_targets(slug, sezon_no, bolum_no):
     ]
 
 
+def build_dizipalbid_targets(slug, sezon_no, bolum_no):
+    base = DIZIPALBID_BASE_DOMAIN
+    clean_slug = (slug or "").strip().strip("/")
+    if not clean_slug:
+        return []
+
+    variants = [clean_slug]
+    if clean_slug.endswith("-izle"):
+        variants.append(clean_slug[:-5])
+    else:
+        variants.append(clean_slug + "-izle")
+
+    targets = []
+    for variant in dedup_keep_order([v.strip("-/") for v in variants if v.strip("-/")]):
+        targets.append(f"{base}/bolum/{variant}-{sezon_no}-sezon-{bolum_no}-bolum-izle/")
+        targets.append(f"{base}/bolum/{variant}-{sezon_no}-sezon-{bolum_no}-bolum-izle")
+    return dedup_keep_order(targets)
+
+
 def build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no):
     base = HDFILMCEHENNEMI_BASE_DOMAIN
     clean_slug = (slug or "").strip().strip("/")
@@ -2649,10 +2669,13 @@ def source_order_for_yayin(slug_candidates):
         "hdfilmizle.to": "hdfilmizleto",
         "fullhdfilmizlesene.life": "fullhdfilmizlesene",
         "fullhdfilmizlesene": "fullhdfilmizlesene",
+        "dizipal.bid": "dizipalbid",
+        "dizipalbid": "dizipalbid",
+        "dizipal": "dizipalbid",
     }
     hint = source_aliases.get(hint, hint)
     sources = ["filmhane", "fullhd", "hdizipal"]
-    optional_sources = ["hdfilmizleto", "fullhdfilmizlesene"]
+    optional_sources = ["dizipalbid", "hdfilmizleto", "fullhdfilmizlesene"]
     if hint in sources + optional_sources:
         return [hint] + [source for source in sources + optional_sources if source != hint]
 
@@ -3261,6 +3284,7 @@ def stream_dizi(dizi, bolum):
     filmhane_candidates = []
     fullhd_candidates = []
     hdizipal_candidates = []
+    dizipalbid_candidates = []
     hdfilmcehennemi_candidates = []
     hdfilmizleto_candidates = []
     filmmakinesi_candidates = []
@@ -3278,6 +3302,9 @@ def stream_dizi(dizi, bolum):
 
     for slug in slug_candidates:
         hdizipal_candidates.extend(build_hdizipal_targets(slug, sezon_no, bolum_no))
+
+    for slug in slug_candidates:
+        dizipalbid_candidates.extend(build_dizipalbid_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
         hdfilmcehennemi_candidates.extend(build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no))
@@ -3302,6 +3329,7 @@ def stream_dizi(dizi, bolum):
         "filmhane": filmhane_candidates,
         "fullhd": fullhd_candidates,
         "hdizipal": hdizipal_candidates,
+        "dizipalbid": dizipalbid_candidates,
         "hdfilmcehennemi": hdfilmcehennemi_candidates,
         "hdfilmizleto": hdfilmizleto_candidates,
         "filmmakinesi": filmmakinesi_candidates,
