@@ -15,6 +15,11 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 try:
+    from curl_cffi import requests as BROWSER_REQUESTS
+except Exception:
+    BROWSER_REQUESTS = None
+
+try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 except Exception:
     Cipher = None
@@ -23,7 +28,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V209"
+VERSION = "V210"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -454,6 +459,53 @@ def fetch_text_with_diagnostics(url, headers, timeout_sec=DEFAULT_TIMEOUT):
                 "message": str(exc)[:180],
             }
             continue
+
+    try_browser_fetch = False
+    try:
+        host = (urlparse(url or "").hostname or "").lower()
+        try_browser_fetch = (
+            "hdfilmcehennemi" in host
+            or host == "pichive.online"
+            or host.endswith(".pichive.online")
+        )
+    except Exception:
+        try_browser_fetch = False
+
+    if BROWSER_REQUESTS is not None and try_browser_fetch:
+        for attempt_headers in attempts:
+            diagnostic["attempts"] = diagnostic.get("attempts", 0) + 1
+            try:
+                r = BROWSER_REQUESTS.get(
+                    url,
+                    headers=attempt_headers,
+                    timeout=timeout_sec,
+                    allow_redirects=True,
+                    impersonate="chrome124",
+                )
+                final_url = r.url or final_url
+                content_type = r.headers.get("content-type") or ""
+                diagnostic = {
+                    "client": "curl_cffi",
+                    "attempts": diagnostic["attempts"],
+                    "status": r.status_code,
+                    "final": final_url,
+                    "content_type": content_type[:80],
+                }
+                if r.status_code >= 400:
+                    continue
+                r.encoding = r.encoding or "utf-8"
+                text = r.text or ""
+                diagnostic["length"] = len(text)
+                if text:
+                    return text, final_url, diagnostic
+            except Exception as exc:
+                diagnostic = {
+                    "client": "curl_cffi",
+                    "attempts": diagnostic.get("attempts", 0),
+                    "error": exc.__class__.__name__,
+                    "message": str(exc)[:180],
+                }
+                continue
     return "", final_url, diagnostic
 
 
