@@ -23,7 +23,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V207"
+VERSION = "V208"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -110,6 +110,7 @@ RE_HDFILMCEHENNEMI_DECODER = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 RE_JWPLAYER_TRACKS = re.compile(r"""(?:tracks\s*:|configs\.tracks\s*=|jwSetup\.tracks\s*=)\s*(\[[^\]]*\])""", re.IGNORECASE | re.DOTALL)
+RE_JWPLAYER_TRACKS_ASSIGN = re.compile(r"""(?:var|let|const)?\s*(?:subtitleTracks|tracks)\s*=\s*(\[[^\]]*\])""", re.IGNORECASE | re.DOTALL)
 RE_HDFILMCEHENNEMI_EMBED_ID = re.compile(r"^[A-Za-z0-9_-]{6,}$")
 RE_VIDRAME_DD = re.compile(r"""EE\.dd\(\s*["']([^"']+)["']\s*\)""", re.IGNORECASE)
 RE_FULLHDFILMIZLESENE_SCX = re.compile(r"""var\s+scx\s*=\s*(\{.*?\})\s*;""", re.IGNORECASE | re.DOTALL)
@@ -878,10 +879,29 @@ def normalize_subtitle_language(label):
 
 
 def subtitle_mime_type(url):
-    low = (url or "").lower().split("?", 1)[0]
-    if low.endswith(".srt"):
+    low = (url or "").lower()
+    path = low.split("?", 1)[0]
+    if path.endswith(".srt") or ".srt" in low or "srt=" in low:
         return "application/x-subrip"
     return "text/vtt"
+
+
+def looks_like_subtitle_url(url):
+    low = (url or "").strip().lower()
+    if not low.startswith(("http://", "https://")):
+        return False
+    parsed = urlparse(low)
+    path = parsed.path or ""
+    query = parsed.query or ""
+    return (
+        path.endswith((".vtt", ".srt"))
+        or ".vtt" in low
+        or ".srt" in low
+        or "vtt=" in query
+        or "srt=" in query
+        or "subtitle" in low
+        or "caption" in low
+    )
 
 
 def extract_playerjs_subtitles(embed_html, embed_url=""):
@@ -900,7 +920,7 @@ def extract_playerjs_subtitles(embed_html, embed_url=""):
             matches = RE_ANY_SUBTITLE_URL.findall(raw)
         for label, raw_url in matches:
             url = normalize_url(raw_url, base_url=embed_url)
-            if not is_http_url(url) or url in seen:
+            if not is_http_url(url) or not looks_like_subtitle_url(url) or url in seen:
                 continue
             seen.add(url)
             clean_label = (label or "").strip() or "Altyazi"
@@ -922,8 +942,7 @@ def extract_jwplayer_subtitles(embed_html, embed_url=""):
         url = normalize_url(str(raw_url or ""), base_url=embed_url)
         if not is_http_url(url) or url in seen:
             return
-        low = url.lower().split("?", 1)[0]
-        if not (low.endswith(".vtt") or low.endswith(".srt")):
+        if not looks_like_subtitle_url(url):
             return
         seen.add(url)
         clean_label = (label or "").strip() or "Altyazi"
@@ -936,7 +955,11 @@ def extract_jwplayer_subtitles(embed_html, embed_url=""):
         })
 
     source = re.sub(r"/\*.*?\*/", "", embed_html or "", flags=re.DOTALL)
-    for raw_array in RE_JWPLAYER_TRACKS.findall(source):
+    raw_arrays = []
+    raw_arrays.extend(RE_JWPLAYER_TRACKS.findall(source))
+    raw_arrays.extend(RE_JWPLAYER_TRACKS_ASSIGN.findall(source))
+
+    for raw_array in raw_arrays:
         try:
             payload = json.loads(raw_array)
         except Exception:
@@ -2273,7 +2296,11 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None
 
     cands = extract_m3u8_candidates(html, effective_page_url)
     if cands:
-        return {"url": cands[0], "subtitles": []}
+        subtitles = merge_subtitle_tracks(
+            extract_jwplayer_subtitles(html, effective_page_url),
+            extract_playerjs_subtitles(html, effective_page_url),
+        )
+        return {"url": cands[0], "subtitles": subtitles}
 
     if depth >= max_depth:
         return {}
