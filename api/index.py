@@ -23,7 +23,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V208"
+VERSION = "V209"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -40,7 +40,7 @@ FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.shop"
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
 HDIZIPAL_BASE_DOMAIN = os.getenv("HDIZIPAL_BASE_DOMAIN", "https://hdizipal.com").rstrip("/")
 DIZIPALBID_BASE_DOMAIN = os.getenv("DIZIPALBID_BASE_DOMAIN", "https://dizipal.bid").rstrip("/")
-HDFILMCEHENNEMI_BASE_DOMAIN = os.getenv("HDFILMCEHENNEMI_BASE_DOMAIN", "https://www.hdfilmcehennemi.nl").rstrip("/")
+HDFILMCEHENNEMI_BASE_DOMAIN = os.getenv("HDFILMCEHENNEMI_BASE_DOMAIN", "https://hdfilmcehennemi.direct").rstrip("/")
 HDFILMCEHENNEMI_EMBED_DOMAIN = os.getenv("HDFILMCEHENNEMI_EMBED_DOMAIN", "https://hdfilmcehennemi.mobi").rstrip("/")
 HDFILMIZLETO_BASE_DOMAIN = os.getenv("HDFILMIZLETO_BASE_DOMAIN", "https://www.hdfilmizle.to").rstrip("/")
 FILMMAKINESI_BASE_DOMAIN = os.getenv("FILMMAKINESI_BASE_DOMAIN", "https://filmmakinesi.to").rstrip("/")
@@ -117,6 +117,10 @@ RE_FULLHDFILMIZLESENE_SCX = re.compile(r"""var\s+scx\s*=\s*(\{.*?\})\s*;""", re.
 RE_RAPIDVID_AV_FILE = re.compile(r"""["']file["']\s*:\s*av\(\s*["']([^"']+)["']\s*\)""", re.IGNORECASE | re.DOTALL)
 RE_PLAYER_CONFIGS = re.compile(r"""playerConfigs\s*=\s*(\{.*?\})\s*;""", re.IGNORECASE | re.DOTALL)
 RE_BEPLAYER_CALL = re.compile(r"""bePlayer\(\s*["']([^"']+)["']\s*,\s*["']((?:\\["']|[^"'])*)["']""", re.IGNORECASE | re.DOTALL)
+RE_PICHIVE_OPENPLAYER = re.compile(
+    r"""openPlayer\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']""",
+    re.IGNORECASE | re.DOTALL,
+)
 
 HDFILMCEHENNEMI_KNOWN_EMBEDS = {
     "kac-run-izle-hdf-6": "cvoodwhGycV",
@@ -1027,6 +1031,20 @@ def is_hdfilmcehennemi_embed_url(url):
         return False
 
 
+def is_pichive_embed_url(url):
+    try:
+        p = urlparse(url or "")
+        host = (p.hostname or "").lower()
+        path = (p.path or "").lower()
+    except Exception:
+        return False
+
+    return (
+        (host == "pichive.online" or host.endswith(".pichive.online"))
+        and path.endswith("/iframe.php")
+    )
+
+
 def is_filmmakinesi_embed_url(url):
     try:
         p = urlparse(url or "")
@@ -1910,6 +1928,152 @@ def resolve_hdfilmcehennemi_embed_detail(embed_url, upstream_headers, embed_html
     return {}
 
 
+def pichive_master_playlist_url(raw_url, base_url):
+    stream_url = normalize_url(raw_url, base_url)
+    if not is_http_url(stream_url):
+        return ""
+
+    parsed = urlparse(stream_url)
+    path = parsed.path or ""
+    if path.endswith("/m.php"):
+        path = path[:-len("/m.php")] + "/master.m3u8"
+    elif path.endswith("m.php"):
+        path = path[:-len("m.php")] + "master.m3u8"
+    elif "m.php" in path:
+        path = path.replace("m.php", "master.m3u8", 1)
+
+    return urlunparse(parsed._replace(path=path))
+
+
+def extract_pichive_openplayer_token(embed_html):
+    m = RE_PICHIVE_OPENPLAYER.search(embed_html or "")
+    if not m:
+        return ""
+    return decode_js_string_literal(m.group(1) or "").strip()
+
+
+def extract_pichive_subtitles(embed_html, embed_url):
+    tracks = []
+    seen = set()
+    decoded = html_lib.unescape(embed_html or "").replace("\\/", "/").replace("\\u0026", "&")
+
+    for blob in re.findall(r"""\[\s*\{[^;\[\]]*?["']file["']\s*:[^;\[\]]*?\}\s*\]""", decoded, re.IGNORECASE | re.DOTALL):
+        try:
+            items = json.loads(blob)
+        except Exception:
+            continue
+
+        if not isinstance(items, list):
+            continue
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            raw_url = item.get("file") or item.get("url") or ""
+            url = normalize_url(str(raw_url or ""), embed_url)
+            if not is_http_url(url) or not looks_like_subtitle_url(url) or url in seen:
+                continue
+            seen.add(url)
+            label = str(item.get("label") or item.get("lang") or "Altyazi").strip()
+            language = normalize_subtitle_language(label) or normalize_subtitle_language(str(item.get("lang") or ""))
+            tracks.append({
+                "url": url,
+                "label": label,
+                "language": language or "tr",
+                "mimeType": subtitle_mime_type(url),
+            })
+
+    return tracks
+
+
+def resolve_pichive_embed_detail(embed_url, upstream_headers, embed_html=None):
+    embed_origin = origin_of(embed_url) or "https://pichive.online"
+    parent_referer = upstream_headers.get("Referer") or embed_origin + "/"
+    parent_origin = origin_of(parent_referer) or upstream_headers.get("Origin") or embed_origin
+    embed_headers = {
+        "User-Agent": upstream_headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": upstream_headers.get("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"),
+        "Referer": parent_referer,
+        "Origin": parent_origin,
+        "Sec-Fetch-Dest": "iframe",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site",
+        "Upgrade-Insecure-Requests": "1",
+    }
+
+    html = embed_html
+    if html is None:
+        html = fetch_text(embed_url, embed_headers, timeout_sec=DEFAULT_TIMEOUT)
+    if not html:
+        return {}
+
+    playlist_token = extract_pichive_openplayer_token(html)
+    if not playlist_token:
+        return {}
+
+    subtitles = merge_subtitle_tracks(
+        extract_pichive_subtitles(html, embed_url),
+        extract_jwplayer_subtitles(html, embed_url),
+        extract_playerjs_subtitles(html, embed_url),
+    )
+
+    source_url = urljoin(embed_url, "source2.php") + "?v=" + quote(playlist_token, safe="")
+    source_headers = {
+        "User-Agent": embed_headers["User-Agent"],
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": embed_headers["Accept-Language"],
+        "Referer": embed_url,
+        "X-Requested-With": "XMLHttpRequest",
+    }
+
+    try:
+        payload = json.loads(fetch_text(source_url, source_headers, timeout_sec=DEFAULT_TIMEOUT) or "{}")
+    except Exception:
+        payload = {}
+
+    playlist = payload.get("playlist") if isinstance(payload, dict) else None
+    if not isinstance(playlist, list):
+        return {}
+
+    stream_options = []
+    for entry in playlist:
+        if not isinstance(entry, dict):
+            continue
+        sources = entry.get("sources")
+        if not isinstance(sources, list):
+            continue
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            raw_file = source.get("file") or source.get("src") or ""
+            master_url = pichive_master_playlist_url(str(raw_file or ""), embed_url)
+            if not is_http_url(master_url) or not is_probable_hls_manifest_url(master_url):
+                continue
+            title = str(source.get("title") or entry.get("title") or "").strip()
+            stream_options.append((title.lower(), master_url))
+
+    if not stream_options:
+        return {}
+
+    preferred = stream_options[0][1]
+    for title, stream_url in stream_options:
+        if any(key in title for key in ("dublaj", "dub", "turkce", "türkçe")):
+            preferred = stream_url
+            break
+    else:
+        for title, stream_url in stream_options:
+            if any(key in title for key in ("altyazi", "altyazı", "sub", "orijinal", "original")):
+                preferred = stream_url
+                break
+
+    return {
+        "url": preferred,
+        "headers": make_playback_headers(preferred, referer_hint=embed_url, origin_hint=embed_origin),
+        "subtitles": subtitles,
+    }
+
+
 def resolve_filmmakinesi_embed_detail(embed_url, upstream_headers, embed_html=None):
     embed_origin = origin_of(embed_url) or "https://closeload.filmmakinesi.to"
     embed_headers = {
@@ -2264,6 +2428,11 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None
         if fast.get("url"):
             return fast
 
+    if is_pichive_embed_url(effective_page_url):
+        fast = resolve_pichive_embed_detail(effective_page_url, headers, embed_html=html)
+        if fast.get("url"):
+            return fast
+
     if is_filmmakinesi_embed_url(effective_page_url):
         fast = resolve_filmmakinesi_embed_detail(effective_page_url, headers, embed_html=html)
         if fast.get("url"):
@@ -2324,6 +2493,15 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None
 
         if is_hdfilmcehennemi_embed_url(u):
             fast = resolve_hdfilmcehennemi_embed_detail(u, headers)
+            if fast.get("url"):
+                return fast
+
+        if is_pichive_embed_url(u):
+            fast = resolve_pichive_embed_detail(u, {
+                "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+                "Referer": effective_page_url,
+                "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
+            })
             if fast.get("url"):
                 return fast
 
@@ -2594,6 +2772,12 @@ def build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no):
     if not clean_slug:
         return []
 
+    variants = [clean_slug]
+    if clean_slug.endswith("-izle"):
+        variants.append(clean_slug[:-5])
+    else:
+        variants.append(clean_slug + "-izle")
+
     targets = []
     embed_id = hdfilmcehennemi_embed_id_for_slug(clean_slug)
     if embed_id:
@@ -2601,13 +2785,20 @@ def build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no):
         if direct_embed:
             targets.append(direct_embed)
 
-    targets.extend([
-        f"{base}/{clean_slug}/",
-        f"{base}/{clean_slug}",
-        f"{base}/dizi/{clean_slug}/sezon-{sezon_no}/bolum-{bolum_no}/",
-        f"{base}/dizi/{clean_slug}/sezon-{sezon_no}/bolum-{bolum_no}",
-    ])
-    return targets
+    for variant in dedup_keep_order([v.strip("-/") for v in variants if v.strip("-/")]):
+        targets.extend([
+            f"{base}/bolum/{variant}-{sezon_no}-sezon-{bolum_no}-bolum",
+            f"{base}/bolum/{variant}-{sezon_no}-sezon-{bolum_no}-bolum/",
+            f"{base}/bolum/{variant}-{sezon_no}-sezon-{bolum_no}-bolum-izle",
+            f"{base}/bolum/{variant}-{sezon_no}-sezon-{bolum_no}-bolum-izle/",
+            f"{base}/dizi/{variant}/sezon-{sezon_no}/bolum-{bolum_no}/",
+            f"{base}/dizi/{variant}/sezon-{sezon_no}/bolum-{bolum_no}",
+            f"{base}/film/{variant}/",
+            f"{base}/film/{variant}",
+            f"{base}/{variant}/",
+            f"{base}/{variant}",
+        ])
+    return dedup_keep_order(targets)
 
 
 def build_hdfilmizleto_targets(slug, sezon_no, bolum_no):
@@ -2690,8 +2881,9 @@ def build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no):
 def source_order_for_yayin(slug_candidates):
     hint = (request.args.get("src") or request.args.get("source") or "").strip().lower()
     source_aliases = {
-        # hdfilmcehennemi is intentionally kept out of the automatic/native pipeline:
-        # its HLS media list points to JPEG-like segments that ExoPlayer cannot parse.
+        "hdfilmcehennemi.direct": "hdfilmcehennemi",
+        "hdfilmcehennemi": "hdfilmcehennemi",
+        "hdf": "hdfilmcehennemi",
         "hdfilmizle": "hdfilmizleto",
         "hdfilmizle.to": "hdfilmizleto",
         "fullhdfilmizlesene.life": "fullhdfilmizlesene",
@@ -2702,7 +2894,7 @@ def source_order_for_yayin(slug_candidates):
     }
     hint = source_aliases.get(hint, hint)
     sources = ["filmhane", "fullhd", "hdizipal"]
-    optional_sources = ["dizipalbid", "hdfilmizleto", "fullhdfilmizlesene"]
+    optional_sources = ["dizipalbid", "hdfilmizleto", "fullhdfilmizlesene", "hdfilmcehennemi"]
     if hint in sources + optional_sources:
         return [hint] + [source for source in sources + optional_sources if source != hint]
 
