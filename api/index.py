@@ -28,7 +28,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V214"
+VERSION = "V215"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -2541,7 +2541,7 @@ def resolve_dizibal_detail(page_url, trace=None):
         return {}
 
     content_type, slug, season_no, episode_no = parsed
-    api_kind = "anime" if content_type == "anime" else ("movie" if content_type == "movie" else "series")
+    api_kind = "anime" if content_type == "anime" else ("movies" if content_type == "movie" else "series")
     api_root = DIZIBAL_BASE_DOMAIN + "/api"
     headers = build_dizibal_api_headers(page_url)
 
