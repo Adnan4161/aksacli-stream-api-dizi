@@ -28,7 +28,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V213"
+VERSION = "V214"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -1192,6 +1192,24 @@ def is_vidmoxy_embed_url(url):
     return (
         (host == "vidmoxy.net" or host.endswith(".vidmoxy.net"))
         and ("/fl/" in path or "/pt/" in path or "/embed/" in path or "/v/" in path)
+    )
+
+
+def is_playerjs_known_embed_url(url):
+    try:
+        p = urlparse(url or "")
+        host = (p.hostname or "").lower()
+        path = (p.path or "").lower()
+    except Exception:
+        return False
+
+    return (
+        (
+            host.endswith("ag2m4.cfd")
+            or host.endswith("cdn77.services")
+            or host.endswith("cdn77s.com")
+        )
+        and ("embed" in path or path.endswith(".html") or "/video/" in path)
     )
 
 
@@ -2602,6 +2620,19 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None
     hdf_known = resolve_hdfilmcehennemi_known_embed_detail(page_url, headers)
     if hdf_known.get("url"):
         return hdf_known
+
+    if is_playerjs_known_embed_url(page_url):
+        fast = resolve_playerjs_embed_detail(page_url, headers)
+        if fast.get("url"):
+            if trace is not None:
+                trace.append({
+                    "stage": "playerjs_known",
+                    "depth": depth,
+                    "url": page_url,
+                    "ok": True,
+                    "stream_host": urlparse(fast.get("url") or "").hostname or "",
+                })
+            return fast
 
     html, effective_page_url, fetch_info = fetch_text_with_diagnostics(page_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
     if not html:
