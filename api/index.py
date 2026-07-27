@@ -28,7 +28,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V210"
+VERSION = "V211"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -2947,6 +2947,8 @@ def source_order_for_yayin(slug_candidates):
     hint = source_aliases.get(hint, hint)
     sources = ["filmhane", "fullhd", "hdizipal"]
     optional_sources = ["dizipalbid", "hdfilmizleto", "fullhdfilmizlesene", "hdfilmcehennemi"]
+    if hint == "hdfilmcehennemi":
+        return [hint]
     if hint in sources + optional_sources:
         return [hint] + [source for source in sources + optional_sources if source != hint]
 
