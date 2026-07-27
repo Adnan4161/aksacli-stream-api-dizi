@@ -28,7 +28,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V212"
+VERSION = "V213"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -570,6 +570,10 @@ def is_dizibal_site_url(url):
     except Exception:
         return False
     return bool(host and base_host and (host == base_host or host.endswith("." + base_host)))
+
+
+def is_dizibal_id(value):
+    return bool(re.fullmatch(r"[0-9a-fA-F]{24}", (value or "").strip()))
 
 
 def build_filmmakinesi_page_headers(page_url, referer_url=""):
@@ -2475,7 +2479,7 @@ def resolve_playerjs_embed(embed_url, upstream_headers):
     return ""
 
 
-def parse_dizibal_episode_url(page_url):
+def parse_dizibal_media_url(page_url):
     if not is_dizibal_site_url(page_url):
         return None
     try:
@@ -2483,10 +2487,17 @@ def parse_dizibal_episode_url(page_url):
     except Exception:
         return None
 
-    if len(parts) < 6:
+    if len(parts) < 2:
         return None
     content_type = parts[0].lower()
-    if content_type not in ("series", "anime"):
+
+    if content_type == "movie":
+        slug = parts[1].strip("/")
+        if not slug:
+            return None
+        return content_type, slug, "", ""
+
+    if len(parts) < 6 or content_type not in ("series", "anime"):
         return None
     if parts[2].lower() != "season" or parts[4].lower() != "episode":
         return None
@@ -2499,33 +2510,43 @@ def parse_dizibal_episode_url(page_url):
     return content_type, slug, season_no, episode_no
 
 
+def parse_dizibal_episode_url(page_url):
+    parsed = parse_dizibal_media_url(page_url)
+    if parsed and parsed[0] in ("series", "anime"):
+        return parsed
+    return None
+
+
 def resolve_dizibal_detail(page_url, trace=None):
-    parsed = parse_dizibal_episode_url(page_url)
+    parsed = parse_dizibal_media_url(page_url)
     if not parsed:
         return {}
 
     content_type, slug, season_no, episode_no = parsed
-    api_kind = "anime" if content_type == "anime" else "series"
+    api_kind = "anime" if content_type == "anime" else ("movie" if content_type == "movie" else "series")
     api_root = DIZIBAL_BASE_DOMAIN + "/api"
     headers = build_dizibal_api_headers(page_url)
 
-    series_url = f"{api_root}/{api_kind}/{quote(slug, safe='')}?lang=tr-TR&siteMode=full"
-    series_payload = fetch_json_payload(series_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
-    series_data = series_payload.get("data") if isinstance(series_payload, dict) else None
-    series_id = str((series_data or {}).get("_id") or "").strip()
-    if not series_id:
+    media_url = f"{api_root}/{api_kind}/{quote(slug, safe='')}?lang=tr-TR&siteMode=full"
+    media_payload = fetch_json_payload(media_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    media_data = media_payload.get("data") if isinstance(media_payload, dict) else None
+    media_id = str((media_data or {}).get("_id") or "").strip()
+    if not media_id:
         if trace is not None:
-            trace.append({"stage": "dizibal_series_api", "url": series_url, "ok": False})
+            trace.append({"stage": "dizibal_media_api", "url": media_url, "ok": False, "kind": api_kind})
         return {}
 
     if trace is not None:
-        trace.append({"stage": "dizibal_series_api", "url": series_url, "ok": True, "id": series_id})
+        trace.append({"stage": "dizibal_media_api", "url": media_url, "ok": True, "id": media_id, "kind": api_kind})
 
-    stream_url = (
-        f"{api_root}/{api_kind}/{quote(series_id, safe='')}/seasons/"
-        f"{quote(season_no, safe='')}/episodes/{quote(episode_no, safe='')}/stream"
-        "?lang=tr-TR&siteMode=full"
-    )
+    if content_type == "movie":
+        stream_url = f"{api_root}/{api_kind}/{quote(media_id, safe='')}/stream?lang=tr-TR&siteMode=full"
+    else:
+        stream_url = (
+            f"{api_root}/{api_kind}/{quote(media_id, safe='')}/seasons/"
+            f"{quote(season_no, safe='')}/episodes/{quote(episode_no, safe='')}/stream"
+            "?lang=tr-TR&siteMode=full"
+        )
     stream_payload = fetch_json_payload(stream_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
     stream_data = stream_payload.get("data") if isinstance(stream_payload, dict) else None
     if not isinstance(stream_data, dict):
@@ -2873,6 +2894,8 @@ def slug_variants(slug):
     value = (slug or "").strip().strip("/")
     if not value:
         return []
+    if is_dizibal_id(value):
+        return [value]
 
     variants = [value]
     izle_suffix = "-izle"
@@ -2954,16 +2977,20 @@ def build_dizibal_targets(slug, sezon_no, bolum_no):
     if not clean_slug:
         return []
 
-    variants = [clean_slug]
-    if clean_slug.endswith("-izle"):
-        variants.append(clean_slug[:-5])
+    if is_dizibal_id(clean_slug):
+        variants = [clean_slug]
     else:
-        variants.append(clean_slug + "-izle")
+        variants = [clean_slug]
+        if clean_slug.endswith("-izle"):
+            variants.append(clean_slug[:-5])
+        else:
+            variants.append(clean_slug + "-izle")
 
     targets = []
     for variant in dedup_keep_order([v.strip("-/") for v in variants if v.strip("-/")]):
         targets.append(f"{base}/series/{variant}/season/{sezon_no}/episode/{bolum_no}")
         targets.append(f"{base}/anime/{variant}/season/{sezon_no}/episode/{bolum_no}")
+        targets.append(f"{base}/movie/{variant}")
     return dedup_keep_order(targets)
 
 
@@ -3102,6 +3129,9 @@ def source_order_for_yayin(slug_candidates):
         return [hint]
     if hint in sources + optional_sources:
         return [hint] + [source for source in sources + optional_sources if source != hint]
+
+    if any(is_dizibal_id(s) for s in slug_candidates or []):
+        return ["dizibal"] + sources + [source for source in optional_sources if source != "dizibal"]
 
     primary = (slug_candidates[0] if slug_candidates else "").lower()
     if (
