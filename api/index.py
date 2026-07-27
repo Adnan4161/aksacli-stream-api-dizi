@@ -28,7 +28,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V215"
+VERSION = "V216"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -2997,6 +2997,8 @@ def build_dizipalbid_targets(slug, sezon_no, bolum_no):
 
     targets = []
     for variant in dedup_keep_order([v.strip("-/") for v in variants if v.strip("-/")]):
+        targets.append(f"{base}/{variant}/")
+        targets.append(f"{base}/{variant}")
         targets.append(f"{base}/bolum/{variant}-{sezon_no}-sezon-{bolum_no}-bolum-izle/")
         targets.append(f"{base}/bolum/{variant}-{sezon_no}-sezon-{bolum_no}-bolum-izle")
     return dedup_keep_order(targets)
