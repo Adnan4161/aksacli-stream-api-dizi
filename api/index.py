@@ -28,7 +28,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V211"
+VERSION = "V212"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -45,6 +45,7 @@ FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.shop"
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
 HDIZIPAL_BASE_DOMAIN = os.getenv("HDIZIPAL_BASE_DOMAIN", "https://hdizipal.com").rstrip("/")
 DIZIPALBID_BASE_DOMAIN = os.getenv("DIZIPALBID_BASE_DOMAIN", "https://dizipal.bid").rstrip("/")
+DIZIBAL_BASE_DOMAIN = os.getenv("DIZIBAL_BASE_DOMAIN", "https://dizibal.com").rstrip("/")
 HDFILMCEHENNEMI_BASE_DOMAIN = os.getenv("HDFILMCEHENNEMI_BASE_DOMAIN", "https://hdfilmcehennemi.direct").rstrip("/")
 HDFILMCEHENNEMI_EMBED_DOMAIN = os.getenv("HDFILMCEHENNEMI_EMBED_DOMAIN", "https://hdfilmcehennemi.mobi").rstrip("/")
 HDFILMIZLETO_BASE_DOMAIN = os.getenv("HDFILMIZLETO_BASE_DOMAIN", "https://www.hdfilmizle.to").rstrip("/")
@@ -561,6 +562,16 @@ def is_filmmakinesi_site_url(url):
     return bool(host and base_host and (host == base_host or host.endswith("." + base_host)))
 
 
+def is_dizibal_site_url(url):
+    try:
+        p = urlparse(url or "")
+        host = (p.hostname or "").lower()
+        base_host = (urlparse(DIZIBAL_BASE_DOMAIN).hostname or "dizibal.com").lower()
+    except Exception:
+        return False
+    return bool(host and base_host and (host == base_host or host.endswith("." + base_host)))
+
+
 def build_filmmakinesi_page_headers(page_url, referer_url=""):
     headers = build_page_headers(page_url, referer_url)
     headers.pop("Origin", None)
@@ -585,6 +596,28 @@ def build_source_page_headers(page_url, source_name=""):
     if source_name == "filmmakinesi" or is_filmmakinesi_site_url(page_url):
         return build_filmmakinesi_page_headers(page_url)
     return build_page_headers(page_url)
+
+
+def build_dizibal_api_headers(page_url):
+    origin = origin_of(page_url) or DIZIBAL_BASE_DOMAIN
+    return {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": page_url,
+        "Origin": origin,
+        "Cache-Control": "no-cache",
+    }
+
+
+def fetch_json_payload(url, headers, timeout_sec=DEFAULT_TIMEOUT):
+    body = fetch_text(url, headers=headers, timeout_sec=timeout_sec)
+    if not body:
+        return None
+    try:
+        return json.loads(body)
+    except Exception:
+        return None
 
 
 def dedup_keep_order(items):
@@ -2395,7 +2428,11 @@ def resolve_playerjs_embed_detail(embed_url, upstream_headers):
     # direct m3u8 in embed HTML
     direct = extract_m3u8_candidates(embed_html, embed_url)
     if direct:
-        return {"url": direct[0], "subtitles": subtitles}
+        return {
+            "url": direct[0],
+            "headers": make_playback_headers(direct[0], referer_hint=embed_url, origin_hint=embed_origin),
+            "subtitles": subtitles,
+        }
 
     dl_url = extract_playerjs_dl_url(embed_html, embed_url)
     if not dl_url or not is_http_url(dl_url):
@@ -2422,7 +2459,11 @@ def resolve_playerjs_embed_detail(embed_url, upstream_headers):
         body = fetch_text(dl_url, dl_headers, timeout_sec=DEFAULT_TIMEOUT)
         u = extract_url_from_jsonish(body, base_url=dl_url)
         if u and ".m3u8" in u.lower():
-            return {"url": u, "subtitles": subtitles}
+            return {
+                "url": u,
+                "headers": make_playback_headers(u, referer_hint=embed_url, origin_hint=embed_origin),
+                "subtitles": subtitles,
+            }
 
     return {}
 
@@ -2434,7 +2475,96 @@ def resolve_playerjs_embed(embed_url, upstream_headers):
     return ""
 
 
+def parse_dizibal_episode_url(page_url):
+    if not is_dizibal_site_url(page_url):
+        return None
+    try:
+        parts = [unquote(part).strip() for part in urlparse(page_url or "").path.split("/") if part.strip()]
+    except Exception:
+        return None
+
+    if len(parts) < 6:
+        return None
+    content_type = parts[0].lower()
+    if content_type not in ("series", "anime"):
+        return None
+    if parts[2].lower() != "season" or parts[4].lower() != "episode":
+        return None
+
+    slug = parts[1].strip("/")
+    season_no = parts[3].strip()
+    episode_no = parts[5].strip()
+    if not slug or not season_no or not episode_no:
+        return None
+    return content_type, slug, season_no, episode_no
+
+
+def resolve_dizibal_detail(page_url, trace=None):
+    parsed = parse_dizibal_episode_url(page_url)
+    if not parsed:
+        return {}
+
+    content_type, slug, season_no, episode_no = parsed
+    api_kind = "anime" if content_type == "anime" else "series"
+    api_root = DIZIBAL_BASE_DOMAIN + "/api"
+    headers = build_dizibal_api_headers(page_url)
+
+    series_url = f"{api_root}/{api_kind}/{quote(slug, safe='')}?lang=tr-TR&siteMode=full"
+    series_payload = fetch_json_payload(series_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    series_data = series_payload.get("data") if isinstance(series_payload, dict) else None
+    series_id = str((series_data or {}).get("_id") or "").strip()
+    if not series_id:
+        if trace is not None:
+            trace.append({"stage": "dizibal_series_api", "url": series_url, "ok": False})
+        return {}
+
+    if trace is not None:
+        trace.append({"stage": "dizibal_series_api", "url": series_url, "ok": True, "id": series_id})
+
+    stream_url = (
+        f"{api_root}/{api_kind}/{quote(series_id, safe='')}/seasons/"
+        f"{quote(season_no, safe='')}/episodes/{quote(episode_no, safe='')}/stream"
+        "?lang=tr-TR&siteMode=full"
+    )
+    stream_payload = fetch_json_payload(stream_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+    stream_data = stream_payload.get("data") if isinstance(stream_payload, dict) else None
+    if not isinstance(stream_data, dict):
+        if trace is not None:
+            trace.append({"stage": "dizibal_stream_api", "url": stream_url, "ok": False})
+        return {}
+
+    code = str(stream_data.get("src") or "").strip()
+    embed_url = normalize_url(str(stream_data.get("streamUrl") or ""), page_url)
+
+    if code:
+        embed_api_url = f"{api_root}/stream/embed?code={quote(code, safe='')}&autoplay=1&siteMode=full"
+        embed_payload = fetch_json_payload(embed_api_url, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
+        if isinstance(embed_payload, dict):
+            embed_url = normalize_url(str(embed_payload.get("embedUrl") or embed_url), page_url)
+
+    if not is_http_url(embed_url):
+        if trace is not None:
+            trace.append({"stage": "dizibal_embed", "ok": False, "code": code})
+        return {}
+
+    if trace is not None:
+        trace.append({"stage": "dizibal_embed", "ok": True, "url": embed_url})
+
+    embed_headers = {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+        "Referer": page_url,
+        "Origin": origin_of(page_url) or DIZIBAL_BASE_DOMAIN,
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+    return resolve_from_page_detail(embed_url, headers=embed_headers, depth=0, max_depth=3, trace=trace)
+
+
 def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None):
+    if is_dizibal_site_url(page_url):
+        fast = resolve_dizibal_detail(page_url, trace=trace)
+        if fast.get("url"):
+            return fast
+
     if is_vidmoxy_embed_url(page_url):
         fast = resolve_vidmoxy_embed_detail(page_url, headers, embed_html="")
         if fast.get("url"):
@@ -2818,6 +2948,25 @@ def build_dizipalbid_targets(slug, sezon_no, bolum_no):
     return dedup_keep_order(targets)
 
 
+def build_dizibal_targets(slug, sezon_no, bolum_no):
+    base = DIZIBAL_BASE_DOMAIN
+    clean_slug = (slug or "").strip().strip("/")
+    if not clean_slug:
+        return []
+
+    variants = [clean_slug]
+    if clean_slug.endswith("-izle"):
+        variants.append(clean_slug[:-5])
+    else:
+        variants.append(clean_slug + "-izle")
+
+    targets = []
+    for variant in dedup_keep_order([v.strip("-/") for v in variants if v.strip("-/")]):
+        targets.append(f"{base}/series/{variant}/season/{sezon_no}/episode/{bolum_no}")
+        targets.append(f"{base}/anime/{variant}/season/{sezon_no}/episode/{bolum_no}")
+    return dedup_keep_order(targets)
+
+
 def build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no):
     base = HDFILMCEHENNEMI_BASE_DOMAIN
     clean_slug = (slug or "").strip().strip("/")
@@ -2943,10 +3092,12 @@ def source_order_for_yayin(slug_candidates):
         "dizipal.bid": "dizipalbid",
         "dizipalbid": "dizipalbid",
         "dizipal": "dizipalbid",
+        "dizibal.com": "dizibal",
+        "dizibal": "dizibal",
     }
     hint = source_aliases.get(hint, hint)
     sources = ["filmhane", "fullhd", "hdizipal"]
-    optional_sources = ["dizipalbid", "hdfilmizleto", "fullhdfilmizlesene", "hdfilmcehennemi"]
+    optional_sources = ["dizipalbid", "dizibal", "hdfilmizleto", "fullhdfilmizlesene", "hdfilmcehennemi"]
     if hint == "hdfilmcehennemi":
         return [hint]
     if hint in sources + optional_sources:
@@ -3558,6 +3709,7 @@ def stream_dizi(dizi, bolum):
     fullhd_candidates = []
     hdizipal_candidates = []
     dizipalbid_candidates = []
+    dizibal_candidates = []
     hdfilmcehennemi_candidates = []
     hdfilmizleto_candidates = []
     filmmakinesi_candidates = []
@@ -3578,6 +3730,9 @@ def stream_dizi(dizi, bolum):
 
     for slug in slug_candidates:
         dizipalbid_candidates.extend(build_dizipalbid_targets(slug, sezon_no, bolum_no))
+
+    for slug in slug_candidates:
+        dizibal_candidates.extend(build_dizibal_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
         hdfilmcehennemi_candidates.extend(build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no))
@@ -3603,6 +3758,7 @@ def stream_dizi(dizi, bolum):
         "fullhd": fullhd_candidates,
         "hdizipal": hdizipal_candidates,
         "dizipalbid": dizipalbid_candidates,
+        "dizibal": dizibal_candidates,
         "hdfilmcehennemi": hdfilmcehennemi_candidates,
         "hdfilmizleto": hdfilmizleto_candidates,
         "filmmakinesi": filmmakinesi_candidates,
