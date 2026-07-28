@@ -28,7 +28,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V216"
+VERSION = "V217"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -1205,11 +1205,14 @@ def is_playerjs_known_embed_url(url):
 
     return (
         (
-            host.endswith("ag2m4.cfd")
-            or host.endswith("cdn77.services")
-            or host.endswith("cdn77s.com")
+            (
+                host.endswith("ag2m4.cfd")
+                or host.endswith("cdn77.services")
+                or host.endswith("cdn77s.com")
+            )
+            and ("embed" in path or path.endswith(".html") or "/video/" in path)
         )
-        and ("embed" in path or path.endswith(".html") or "/video/" in path)
+        or (host.endswith("hdload.top") and "/hdplayer/" in path)
     )
 
 
@@ -2962,6 +2965,8 @@ def manual_stream_detail_for_slugs(slug_candidates):
 def build_fullhd_targets(slug, sezon_no, bolum_no):
     base = FULLHD_BASE_DOMAIN
     return [
+        f"{base}/{slug}/sezon-{sezon_no}/bolum-{bolum_no}/",
+        f"{base}/{slug}/sezon-{sezon_no}/bolum-{bolum_no}",
         f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}/",
         f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}",
         f"{base}/film/{slug}/",
