@@ -28,7 +28,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V217"
+VERSION = "V218"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -468,6 +468,11 @@ def fetch_text_with_diagnostics(url, headers, timeout_sec=DEFAULT_TIMEOUT):
             "hdfilmcehennemi" in host
             or host == "pichive.online"
             or host.endswith(".pichive.online")
+            or host == "dizipal.bid"
+            or host.endswith(".dizipal.bid")
+            or host.endswith("ag2m4.cfd")
+            or host.endswith("cdn77.services")
+            or host.endswith("cdn77s.com")
         )
     except Exception:
         try_browser_fetch = False
