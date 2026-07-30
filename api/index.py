@@ -28,7 +28,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V218"
+VERSION = "V220"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -468,8 +468,6 @@ def fetch_text_with_diagnostics(url, headers, timeout_sec=DEFAULT_TIMEOUT):
             "hdfilmcehennemi" in host
             or host == "pichive.online"
             or host.endswith(".pichive.online")
-            or host == "dizipal.bid"
-            or host.endswith(".dizipal.bid")
             or host.endswith("ag2m4.cfd")
             or host.endswith("cdn77.services")
             or host.endswith("cdn77s.com")
@@ -2453,7 +2451,10 @@ def resolve_playerjs_embed_detail(embed_url, upstream_headers):
     if not embed_html:
         return {}
 
-    subtitles = extract_playerjs_subtitles(embed_html, embed_url)
+    subtitles = merge_subtitle_tracks(
+        extract_playerjs_subtitles(embed_html, embed_url),
+        extract_jwplayer_subtitles(embed_html, embed_url),
+    )
 
     # direct m3u8 in embed HTML
     direct = extract_m3u8_candidates(embed_html, embed_url)
@@ -3159,15 +3160,12 @@ def source_order_for_yayin(slug_candidates):
         "hdfilmizle.to": "hdfilmizleto",
         "fullhdfilmizlesene.life": "fullhdfilmizlesene",
         "fullhdfilmizlesene": "fullhdfilmizlesene",
-        "dizipal.bid": "dizipalbid",
-        "dizipalbid": "dizipalbid",
-        "dizipal": "dizipalbid",
         "dizibal.com": "dizibal",
         "dizibal": "dizibal",
     }
     hint = source_aliases.get(hint, hint)
     sources = ["filmhane", "fullhd", "hdizipal"]
-    optional_sources = ["dizipalbid", "dizibal", "hdfilmizleto", "fullhdfilmizlesene", "hdfilmcehennemi"]
+    optional_sources = ["dizibal", "hdfilmizleto", "fullhdfilmizlesene", "hdfilmcehennemi"]
     if hint == "hdfilmcehennemi":
         return [hint]
     if hint in sources + optional_sources:
@@ -3781,7 +3779,6 @@ def stream_dizi(dizi, bolum):
     filmhane_candidates = []
     fullhd_candidates = []
     hdizipal_candidates = []
-    dizipalbid_candidates = []
     dizibal_candidates = []
     hdfilmcehennemi_candidates = []
     hdfilmizleto_candidates = []
@@ -3800,9 +3797,6 @@ def stream_dizi(dizi, bolum):
 
     for slug in slug_candidates:
         hdizipal_candidates.extend(build_hdizipal_targets(slug, sezon_no, bolum_no))
-
-    for slug in slug_candidates:
-        dizipalbid_candidates.extend(build_dizipalbid_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
         dizibal_candidates.extend(build_dizibal_targets(slug, sezon_no, bolum_no))
@@ -3830,7 +3824,6 @@ def stream_dizi(dizi, bolum):
         "filmhane": filmhane_candidates,
         "fullhd": fullhd_candidates,
         "hdizipal": hdizipal_candidates,
-        "dizipalbid": dizipalbid_candidates,
         "dizibal": dizibal_candidates,
         "hdfilmcehennemi": hdfilmcehennemi_candidates,
         "hdfilmizleto": hdfilmizleto_candidates,
