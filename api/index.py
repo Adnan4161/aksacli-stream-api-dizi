@@ -43,7 +43,6 @@ BASE_HEADERS = {
 API_KEY = os.getenv("API_KEY", "").strip()
 FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.shop").rstrip("/")
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
-HDIZIPAL_BASE_DOMAIN = os.getenv("HDIZIPAL_BASE_DOMAIN", "https://hdizipal.com").rstrip("/")
 DIZIPALBID_BASE_DOMAIN = os.getenv("DIZIPALBID_BASE_DOMAIN", "https://dizipal.bid").rstrip("/")
 DIZIBAL_BASE_DOMAIN = os.getenv("DIZIBAL_BASE_DOMAIN", "https://dizibal.com").rstrip("/")
 HDFILMCEHENNEMI_BASE_DOMAIN = os.getenv("HDFILMCEHENNEMI_BASE_DOMAIN", "https://hdfilmcehennemi.direct").rstrip("/")
@@ -2982,18 +2981,6 @@ def build_fullhd_targets(slug, sezon_no, bolum_no):
     ]
 
 
-def build_hdizipal_targets(slug, sezon_no, bolum_no):
-    base = HDIZIPAL_BASE_DOMAIN
-    clean_slug = (slug or "").strip().strip("/")
-    if not clean_slug:
-        return []
-
-    return [
-        f"{base}/dizi/{clean_slug}/{sezon_no}-sezon/{bolum_no}-bolum",
-        f"{base}/dizi/{clean_slug}/sezon-{sezon_no}/bolum-{bolum_no}",
-    ]
-
-
 def build_dizipalbid_targets(slug, sezon_no, bolum_no):
     base = DIZIPALBID_BASE_DOMAIN
     clean_slug = (slug or "").strip().strip("/")
@@ -3164,7 +3151,7 @@ def source_order_for_yayin(slug_candidates):
         "dizibal": "dizibal",
     }
     hint = source_aliases.get(hint, hint)
-    sources = ["filmhane", "fullhd", "hdizipal"]
+    sources = ["filmhane", "fullhd"]
     optional_sources = ["dizibal", "hdfilmizleto", "fullhdfilmizlesene", "hdfilmcehennemi"]
     if hint == "hdfilmcehennemi":
         return [hint]
@@ -3778,7 +3765,6 @@ def stream_dizi(dizi, bolum):
     mapped_candidates = []
     filmhane_candidates = []
     fullhd_candidates = []
-    hdizipal_candidates = []
     dizibal_candidates = []
     hdfilmcehennemi_candidates = []
     hdfilmizleto_candidates = []
@@ -3794,9 +3780,6 @@ def stream_dizi(dizi, bolum):
 
     for slug in slug_candidates:
         fullhd_candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
-
-    for slug in slug_candidates:
-        hdizipal_candidates.extend(build_hdizipal_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
         dizibal_candidates.extend(build_dizibal_targets(slug, sezon_no, bolum_no))
@@ -3823,7 +3806,6 @@ def stream_dizi(dizi, bolum):
     source_candidates = {
         "filmhane": filmhane_candidates,
         "fullhd": fullhd_candidates,
-        "hdizipal": hdizipal_candidates,
         "dizibal": dizibal_candidates,
         "hdfilmcehennemi": hdfilmcehennemi_candidates,
         "hdfilmizleto": hdfilmizleto_candidates,
