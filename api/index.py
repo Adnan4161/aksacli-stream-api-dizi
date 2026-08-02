@@ -3158,6 +3158,8 @@ def source_order_for_yayin(slug_candidates):
     optional_sources = ["dizibal", "hdfilmizleto", "filmmakinesi", "fullhdfilmizlesene", "hdfilmcehennemi"]
     if hint == "hdfilmcehennemi":
         return [hint]
+    if hint == "filmmakinesi":
+        return [hint]
     if hint in sources + optional_sources:
         return [hint] + [source for source in sources + optional_sources if source != hint]
 
@@ -3173,7 +3175,7 @@ def source_order_for_yayin(slug_candidates):
         return ["fullhdfilmizlesene"] + sources + [source for source in optional_sources if source != "fullhdfilmizlesene"]
 
     if re.search(r"-fm\d+$", primary):
-        return ["filmmakinesi"] + sources + [source for source in optional_sources if source != "filmmakinesi"]
+        return ["filmmakinesi"]
 
     return sources + optional_sources
 
