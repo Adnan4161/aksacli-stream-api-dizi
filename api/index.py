@@ -43,11 +43,13 @@ BASE_HEADERS = {
 API_KEY = os.getenv("API_KEY", "").strip()
 FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.shop").rstrip("/")
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
+HDIZIPAL_BASE_DOMAIN = os.getenv("HDIZIPAL_BASE_DOMAIN", "https://hdizipal.com").rstrip("/")
 DIZIPALBID_BASE_DOMAIN = os.getenv("DIZIPALBID_BASE_DOMAIN", "https://dizipal.bid").rstrip("/")
 DIZIBAL_BASE_DOMAIN = os.getenv("DIZIBAL_BASE_DOMAIN", "https://dizibal.com").rstrip("/")
 HDFILMCEHENNEMI_BASE_DOMAIN = os.getenv("HDFILMCEHENNEMI_BASE_DOMAIN", "https://hdfilmcehennemi.direct").rstrip("/")
 HDFILMCEHENNEMI_EMBED_DOMAIN = os.getenv("HDFILMCEHENNEMI_EMBED_DOMAIN", "https://hdfilmcehennemi.mobi").rstrip("/")
 HDFILMIZLETO_BASE_DOMAIN = os.getenv("HDFILMIZLETO_BASE_DOMAIN", "https://www.hdfilmizle.to").rstrip("/")
+FILMMAKINESI_BASE_DOMAIN = os.getenv("FILMMAKINESI_BASE_DOMAIN", "https://filmmakinesi.to").rstrip("/")
 FULLHDFILMIZLESENE_BASE_DOMAIN = os.getenv("FULLHDFILMIZLESENE_BASE_DOMAIN", "https://www.fullhdfilmizlesene.life").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 YABANTV_BROADCAST_URL = os.getenv("YABANTV_BROADCAST_URL", "https://www.yabantv.com/broadcast").strip()
@@ -553,6 +555,16 @@ def build_page_headers(page_url, referer_url=""):
     return headers
 
 
+def is_filmmakinesi_site_url(url):
+    try:
+        p = urlparse(url or "")
+        host = (p.hostname or "").lower()
+        base_host = (urlparse(FILMMAKINESI_BASE_DOMAIN).hostname or "filmmakinesi.to").lower()
+    except Exception:
+        return False
+    return bool(host and base_host and (host == base_host or host.endswith("." + base_host)))
+
+
 def is_dizibal_site_url(url):
     try:
         p = urlparse(url or "")
@@ -567,7 +579,29 @@ def is_dizibal_id(value):
     return bool(re.fullmatch(r"[0-9a-fA-F]{24}", (value or "").strip()))
 
 
+def build_filmmakinesi_page_headers(page_url, referer_url=""):
+    headers = build_page_headers(page_url, referer_url)
+    headers.pop("Origin", None)
+    headers.update({
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Sec-CH-UA": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        "Sec-CH-UA-Mobile": "?0",
+        "Sec-CH-UA-Platform": '"Windows"',
+        "Pragma": "no-cache",
+        "Cache-Control": "no-cache",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin" if referer_url else "none",
+        "Sec-Fetch-User": "?1",
+    })
+    return headers
+
+
 def build_source_page_headers(page_url, source_name=""):
+    if source_name == "filmmakinesi" or is_filmmakinesi_site_url(page_url):
+        return build_filmmakinesi_page_headers(page_url)
     return build_page_headers(page_url)
 
 
@@ -2934,21 +2968,30 @@ def manual_stream_detail_for_slugs(slug_candidates):
     return None
 
 
-def build_fullhd_targets(slug, sezon_no, bolum_no, prefer_series=False):
+def build_fullhd_targets(slug, sezon_no, bolum_no):
     base = FULLHD_BASE_DOMAIN
-    series_targets = [
+    return [
         f"{base}/{slug}/sezon-{sezon_no}/bolum-{bolum_no}/",
         f"{base}/{slug}/sezon-{sezon_no}/bolum-{bolum_no}",
         f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}/",
         f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}",
-    ]
-    movie_targets = [
-        f"{base}/{slug}/",
-        f"{base}/{slug}",
         f"{base}/film/{slug}/",
         f"{base}/film/{slug}",
+        f"{base}/{slug}/",
+        f"{base}/{slug}",
     ]
-    return series_targets + movie_targets if prefer_series else movie_targets + series_targets
+
+
+def build_hdizipal_targets(slug, sezon_no, bolum_no):
+    base = HDIZIPAL_BASE_DOMAIN
+    clean_slug = (slug or "").strip().strip("/")
+    if not clean_slug:
+        return []
+
+    return [
+        f"{base}/dizi/{clean_slug}/{sezon_no}-sezon/{bolum_no}-bolum",
+        f"{base}/dizi/{clean_slug}/sezon-{sezon_no}/bolum-{bolum_no}",
+    ]
 
 
 def build_dizipalbid_targets(slug, sezon_no, bolum_no):
@@ -3107,20 +3150,7 @@ def build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no):
     return dedup_keep_order(targets)
 
 
-def candidate_limit_for_source(source_name, prefer_series=False):
-    limits = {
-        "filmhane": 6,
-        "fullhd": 24,
-        "dizibal": 9,
-        "hdfilmcehennemi": 12,
-        "hdfilmizleto": 12,
-        "filmmakinesi": 8,
-        "fullhdfilmizlesene": 14,
-    }
-    return limits.get(source_name, 8)
-
-
-def source_order_for_yayin(slug_candidates, prefer_series=False):
+def source_order_for_yayin(slug_candidates):
     hint = (request.args.get("src") or request.args.get("source") or "").strip().lower()
     source_aliases = {
         "hdfilmcehennemi.direct": "hdfilmcehennemi",
@@ -3130,21 +3160,16 @@ def source_order_for_yayin(slug_candidates, prefer_series=False):
         "hdfilmizle.to": "hdfilmizleto",
         "fullhdfilmizlesene.life": "fullhdfilmizlesene",
         "fullhdfilmizlesene": "fullhdfilmizlesene",
-        "film-makinesi": "filmmakinesi",
-        "filmmakinesi.to": "filmmakinesi",
-        "filmmakinesi": "filmmakinesi",
         "dizibal.com": "dizibal",
         "dizibal": "dizibal",
     }
     hint = source_aliases.get(hint, hint)
-    sources = ["filmhane", "fullhd"] if prefer_series else ["fullhd", "filmhane"]
-    optional_sources = ["dizibal", "fullhdfilmizlesene", "hdfilmizleto", "hdfilmcehennemi"]
+    sources = ["filmhane", "fullhd", "hdizipal"]
+    optional_sources = ["dizibal", "hdfilmizleto", "fullhdfilmizlesene", "hdfilmcehennemi"]
     if hint == "hdfilmcehennemi":
         return [hint]
-    if hint == "filmmakinesi":
-        return [hint]
     if hint in sources + optional_sources:
-        return [hint]
+        return [hint] + [source for source in sources + optional_sources if source != hint]
 
     if any(is_dizibal_id(s) for s in slug_candidates or []):
         return ["dizibal"] + sources + [source for source in optional_sources if source != "dizibal"]
@@ -3158,7 +3183,7 @@ def source_order_for_yayin(slug_candidates, prefer_series=False):
         return ["fullhdfilmizlesene"] + sources + [source for source in optional_sources if source != "fullhdfilmizlesene"]
 
     if re.search(r"-fm\d+$", primary):
-        return ["filmmakinesi"]
+        return []
 
     return sources + optional_sources
 
@@ -3753,6 +3778,7 @@ def stream_dizi(dizi, bolum):
     mapped_candidates = []
     filmhane_candidates = []
     fullhd_candidates = []
+    hdizipal_candidates = []
     dizibal_candidates = []
     hdfilmcehennemi_candidates = []
     hdfilmizleto_candidates = []
@@ -3763,12 +3789,14 @@ def stream_dizi(dizi, bolum):
             mapped_candidates.append(films[slug])
 
     for slug in slug_candidates:
-        series_targets = [f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}"]
-        movie_targets = [f"{base}/film/{slug}"]
-        filmhane_candidates.extend(series_targets + movie_targets if prefer_series_sources else movie_targets + series_targets)
+        filmhane_candidates.append(f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}")
+        filmhane_candidates.append(f"{base}/film/{slug}")
 
     for slug in slug_candidates:
-        fullhd_candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no, prefer_series=prefer_series_sources))
+        fullhd_candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
+
+    for slug in slug_candidates:
+        hdizipal_candidates.extend(build_hdizipal_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
         dizibal_candidates.extend(build_dizibal_targets(slug, sezon_no, bolum_no))
@@ -3795,13 +3823,14 @@ def stream_dizi(dizi, bolum):
     source_candidates = {
         "filmhane": filmhane_candidates,
         "fullhd": fullhd_candidates,
+        "hdizipal": hdizipal_candidates,
         "dizibal": dizibal_candidates,
         "hdfilmcehennemi": hdfilmcehennemi_candidates,
         "hdfilmizleto": hdfilmizleto_candidates,
         "filmmakinesi": filmmakinesi_candidates,
         "fullhdfilmizlesene": fullhdfilmizlesene_candidates,
     }
-    source_order = source_order_for_yayin(slug_candidates, prefer_series=prefer_series_sources)
+    source_order = source_order_for_yayin(slug_candidates)
     source_lookup = {}
     for source_name, source_list in source_candidates.items():
         for item in source_list:
@@ -3811,8 +3840,7 @@ def stream_dizi(dizi, bolum):
 
     candidates = list(mapped_candidates)
     for source in source_order:
-        source_list = source_candidates.get(source, [])
-        candidates.extend(source_list[:candidate_limit_for_source(source, prefer_series_sources)])
+        candidates.extend(source_candidates.get(source, []))
 
     # dedup keep order
     ordered_candidates = []
@@ -3869,19 +3897,7 @@ def stream_dizi(dizi, bolum):
             )
         return redirect_light(cached, ttl=SHORT_TTL)
 
-    resolve_started_at = time.time()
-    resolve_budget_seconds = 45 if debug_enabled else 28
-
     for target_page in ordered_candidates:
-        if time.time() - resolve_started_at > resolve_budget_seconds:
-            if debug_enabled:
-                debug_attempts.append({
-                    "stage": "resolve_budget_exhausted",
-                    "elapsed_ms": int((time.time() - resolve_started_at) * 1000),
-                    "candidateCount": len(ordered_candidates),
-                })
-            break
-
         source_name = source_lookup.get(target_page, "unknown")
         headers = build_source_page_headers(target_page, source_name)
         trace = []
