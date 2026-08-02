@@ -3147,12 +3147,15 @@ def source_order_for_yayin(slug_candidates):
         "hdfilmizle.to": "hdfilmizleto",
         "fullhdfilmizlesene.life": "fullhdfilmizlesene",
         "fullhdfilmizlesene": "fullhdfilmizlesene",
+        "film-makinesi": "filmmakinesi",
+        "filmmakinesi.to": "filmmakinesi",
+        "filmmakinesi": "filmmakinesi",
         "dizibal.com": "dizibal",
         "dizibal": "dizibal",
     }
     hint = source_aliases.get(hint, hint)
     sources = ["filmhane", "fullhd"]
-    optional_sources = ["dizibal", "hdfilmizleto", "fullhdfilmizlesene", "hdfilmcehennemi"]
+    optional_sources = ["dizibal", "hdfilmizleto", "filmmakinesi", "fullhdfilmizlesene", "hdfilmcehennemi"]
     if hint == "hdfilmcehennemi":
         return [hint]
     if hint in sources + optional_sources:
@@ -3170,7 +3173,7 @@ def source_order_for_yayin(slug_candidates):
         return ["fullhdfilmizlesene"] + sources + [source for source in optional_sources if source != "fullhdfilmizlesene"]
 
     if re.search(r"-fm\d+$", primary):
-        return []
+        return ["filmmakinesi"] + sources + [source for source in optional_sources if source != "filmmakinesi"]
 
     return sources + optional_sources
 
