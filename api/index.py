@@ -7,7 +7,7 @@ import os
 import re
 import time
 from threading import Lock
-from urllib.parse import quote, unquote, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -21,14 +21,18 @@ except Exception:
 
 try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 except Exception:
     Cipher = None
     algorithms = None
     modes = None
+    hashes = None
+    PBKDF2HMAC = None
 
 app = Flask(__name__)
 
-VERSION = "V220"
+VERSION = "V223"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -43,13 +47,12 @@ BASE_HEADERS = {
 API_KEY = os.getenv("API_KEY", "").strip()
 FILMHANE_BASE_DOMAIN = os.getenv("FILMHANE_BASE_DOMAIN", "https://filmhane.shop").rstrip("/")
 FULLHD_BASE_DOMAIN = os.getenv("FULLHD_BASE_DOMAIN", "https://fullhdfilmizlebox.org").rstrip("/")
-HDIZIPAL_BASE_DOMAIN = os.getenv("HDIZIPAL_BASE_DOMAIN", "https://hdizipal.com").rstrip("/")
 DIZIPALBID_BASE_DOMAIN = os.getenv("DIZIPALBID_BASE_DOMAIN", "https://dizipal.bid").rstrip("/")
+DIZIPALW_BASE_DOMAIN = os.getenv("DIZIPALW_BASE_DOMAIN", "https://dizipalw.com").rstrip("/")
 DIZIBAL_BASE_DOMAIN = os.getenv("DIZIBAL_BASE_DOMAIN", "https://dizibal.com").rstrip("/")
 HDFILMCEHENNEMI_BASE_DOMAIN = os.getenv("HDFILMCEHENNEMI_BASE_DOMAIN", "https://hdfilmcehennemi.direct").rstrip("/")
 HDFILMCEHENNEMI_EMBED_DOMAIN = os.getenv("HDFILMCEHENNEMI_EMBED_DOMAIN", "https://hdfilmcehennemi.mobi").rstrip("/")
 HDFILMIZLETO_BASE_DOMAIN = os.getenv("HDFILMIZLETO_BASE_DOMAIN", "https://www.hdfilmizle.to").rstrip("/")
-FILMMAKINESI_BASE_DOMAIN = os.getenv("FILMMAKINESI_BASE_DOMAIN", "https://filmmakinesi.to").rstrip("/")
 FULLHDFILMIZLESENE_BASE_DOMAIN = os.getenv("FULLHDFILMIZLESENE_BASE_DOMAIN", "https://www.fullhdfilmizlesene.life").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 YABANTV_BROADCAST_URL = os.getenv("YABANTV_BROADCAST_URL", "https://www.yabantv.com/broadcast").strip()
@@ -58,6 +61,12 @@ CANLITV_EMBED_DOMAINS = tuple(
     for domain in os.getenv("CANLITV_EMBED_DOMAINS", "https://www.canlitv.fun,https://www.canlitv.diy").split(",")
     if domain.strip()
 )
+CANLITVVOLO_BASE_DOMAIN = os.getenv("CANLITVVOLO_BASE_DOMAIN", "https://tv.canlitvvolo.com").rstrip("/")
+CANLITVVOLO_API_URL = os.getenv("CANLITVVOLO_API_URL", "https://api.canlitvvolo.com/api/tv/stream").strip()
+CANLITVVOLO_TGRT_BELGESEL_PERMALINK = os.getenv(
+    "CANLITVVOLO_TGRT_BELGESEL_PERMALINK",
+    "tgrt-belgesel-izle/",
+).strip()
 
 _ALLOWED_PROXY_HOSTS_RAW = os.getenv("PROXY_ALLOWED_HOSTS", "").strip()
 PROXY_ALLOWED_HOSTS = {
@@ -125,6 +134,18 @@ RE_PLAYER_CONFIGS = re.compile(r"""playerConfigs\s*=\s*(\{.*?\})\s*;""", re.IGNO
 RE_BEPLAYER_CALL = re.compile(r"""bePlayer\(\s*["']([^"']+)["']\s*,\s*["']((?:\\["']|[^"'])*)["']""", re.IGNORECASE | re.DOTALL)
 RE_PICHIVE_OPENPLAYER = re.compile(
     r"""openPlayer\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']""",
+    re.IGNORECASE | re.DOTALL,
+)
+RE_DIZIPALW_DATA_RM_K = re.compile(
+    r"""<div[^>]+data-rm-k\s*=\s*["']true["'][^>]*>(.*?)</div>""",
+    re.IGNORECASE | re.DOTALL,
+)
+RE_DIZIPALW_PAGELOAD_JS = re.compile(
+    r"""<script[^>]+src\s*=\s*["']([^"']*?/assets/js-dizipal/pageload\.js[^"']*)["']""",
+    re.IGNORECASE,
+)
+RE_DIZIPALW_PASSPHRASE = re.compile(
+    r"""oyunculistdc\(\s*["']([^"']+)["']\s*,\s*document\.querySelector\(\s*["']\[data-rm-k\]["']\s*\)\.innerHTML""",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -468,6 +489,9 @@ def fetch_text_with_diagnostics(url, headers, timeout_sec=DEFAULT_TIMEOUT):
             "hdfilmcehennemi" in host
             or host == "pichive.online"
             or host.endswith(".pichive.online")
+            or "dizipalw" in host
+            or host == "sn.dplayer82.site"
+            or host.endswith(".dplayer82.site")
             or host.endswith("ag2m4.cfd")
             or host.endswith("cdn77.services")
             or host.endswith("cdn77s.com")
@@ -555,16 +579,6 @@ def build_page_headers(page_url, referer_url=""):
     return headers
 
 
-def is_filmmakinesi_site_url(url):
-    try:
-        p = urlparse(url or "")
-        host = (p.hostname or "").lower()
-        base_host = (urlparse(FILMMAKINESI_BASE_DOMAIN).hostname or "filmmakinesi.to").lower()
-    except Exception:
-        return False
-    return bool(host and base_host and (host == base_host or host.endswith("." + base_host)))
-
-
 def is_dizibal_site_url(url):
     try:
         p = urlparse(url or "")
@@ -575,33 +589,21 @@ def is_dizibal_site_url(url):
     return bool(host and base_host and (host == base_host or host.endswith("." + base_host)))
 
 
+def is_dizipalw_site_url(url):
+    try:
+        p = urlparse(url or "")
+        host = (p.hostname or "").lower()
+        base_host = (urlparse(DIZIPALW_BASE_DOMAIN).hostname or "dizipalw.com").lower()
+    except Exception:
+        return False
+    return bool(host and base_host and (host == base_host or host.endswith("." + base_host)))
+
+
 def is_dizibal_id(value):
     return bool(re.fullmatch(r"[0-9a-fA-F]{24}", (value or "").strip()))
 
 
-def build_filmmakinesi_page_headers(page_url, referer_url=""):
-    headers = build_page_headers(page_url, referer_url)
-    headers.pop("Origin", None)
-    headers.update({
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Sec-CH-UA": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        "Sec-CH-UA-Mobile": "?0",
-        "Sec-CH-UA-Platform": '"Windows"',
-        "Pragma": "no-cache",
-        "Cache-Control": "no-cache",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "same-origin" if referer_url else "none",
-        "Sec-Fetch-User": "?1",
-    })
-    return headers
-
-
 def build_source_page_headers(page_url, source_name=""):
-    if source_name == "filmmakinesi" or is_filmmakinesi_site_url(page_url):
-        return build_filmmakinesi_page_headers(page_url)
     return build_page_headers(page_url)
 
 
@@ -1132,22 +1134,13 @@ def is_pichive_embed_url(url):
         return False
 
     return (
-        (host == "pichive.online" or host.endswith(".pichive.online"))
+        (
+            host == "pichive.online"
+            or host.endswith(".pichive.online")
+            or host == "sn.dplayer82.site"
+            or host.endswith(".dplayer82.site")
+        )
         and path.endswith("/iframe.php")
-    )
-
-
-def is_filmmakinesi_embed_url(url):
-    try:
-        p = urlparse(url or "")
-        host = (p.hostname or "").lower()
-        path = (p.path or "").lower()
-    except Exception:
-        return False
-
-    return (
-        host in ("closeload.filmmakinesi.to", "rapid.filmmakinesi.to")
-        and ("embed" in path or "/video/" in path)
     )
 
 
@@ -1375,23 +1368,6 @@ def is_probable_hls_manifest_url(url):
     return False
 
 
-def is_filmmakinesi_stream_host(url):
-    try:
-        host = (urlparse(url or "").hostname or "").lower()
-    except Exception:
-        return False
-    return (
-        host == "playmix.uno"
-        or host.endswith(".playmix.uno")
-        or host == "filmmakinesi.to"
-        or host.endswith(".filmmakinesi.to")
-    )
-
-
-def is_filmmakinesi_hls_url(url):
-    return is_http_url(url) and is_probable_hls_manifest_url(url) and is_filmmakinesi_stream_host(url)
-
-
 def is_hdfilmcehennemi_stream_host(url):
     try:
         host = (urlparse(url or "").hostname or "").lower()
@@ -1469,22 +1445,6 @@ def hdfilmcehennemi_proxy_url(target_url, referer_url):
     )
 
 
-def filmmakinesi_proxy_url(target_url, referer_url):
-    if not is_filmmakinesi_hls_url(target_url):
-        return target_url
-
-    root = request.url_root.rstrip("/") if request else ""
-    if not root:
-        return target_url
-
-    ref = (referer_url or "").strip() or (FILMMAKINESI_BASE_DOMAIN + "/")
-    return (
-        f"{root}/filmmakinesi/playlist.m3u8"
-        f"?url={quote(target_url, safe='')}"
-        f"&ref={quote(ref, safe='')}"
-    )
-
-
 def hdfilmizleto_proxy_url(target_url, referer_url):
     if not is_http_url(target_url) or ".m3u8" not in (target_url or "").lower():
         return target_url
@@ -1524,37 +1484,6 @@ def rewrite_hdfilmcehennemi_playlist(content, playlist_url, referer_url):
         absolute = normalize_url(urljoin(playlist_url, value), playlist_url)
         if is_probable_hls_manifest_url(absolute) and is_hdfilmcehennemi_stream_host(absolute):
             return hdfilmcehennemi_proxy_url(absolute, referer_url)
-        return absolute if is_http_url(absolute) else value
-
-    out = []
-    for raw_line in (content or "").splitlines():
-        line = raw_line.strip()
-        if not line:
-            out.append(raw_line)
-            continue
-
-        if line.startswith("#"):
-            if "URI=" in line:
-                rewritten_line = re.sub(
-                    r"""URI=(["'])([^"']+)(["'])""",
-                    lambda m: f"URI={m.group(1)}{rewrite_playlist_reference(m.group(2))}{m.group(3)}",
-                    raw_line,
-                )
-                out.append(rewritten_line)
-            else:
-                out.append(raw_line)
-            continue
-
-        out.append(rewrite_playlist_reference(line))
-
-    return "\n".join(out) + "\n"
-
-
-def rewrite_filmmakinesi_playlist(content, playlist_url, referer_url):
-    def rewrite_playlist_reference(value):
-        absolute = normalize_url(urljoin(playlist_url, value), playlist_url)
-        if is_filmmakinesi_hls_url(absolute):
-            return filmmakinesi_proxy_url(absolute, referer_url)
         return absolute if is_http_url(absolute) else value
 
     out = []
@@ -2137,6 +2066,7 @@ def resolve_pichive_embed_detail(embed_url, upstream_headers, embed_html=None):
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Accept-Language": embed_headers["Accept-Language"],
         "Referer": embed_url,
+        "Origin": embed_origin,
         "X-Requested-With": "XMLHttpRequest",
     }
 
@@ -2185,40 +2115,6 @@ def resolve_pichive_embed_detail(embed_url, upstream_headers, embed_html=None):
         "headers": make_playback_headers(preferred, referer_hint=embed_url, origin_hint=embed_origin),
         "subtitles": subtitles,
     }
-
-
-def resolve_filmmakinesi_embed_detail(embed_url, upstream_headers, embed_html=None):
-    embed_origin = origin_of(embed_url) or "https://closeload.filmmakinesi.to"
-    embed_headers = {
-        "User-Agent": upstream_headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
-        "Referer": upstream_headers.get("Referer", FILMMAKINESI_BASE_DOMAIN + "/"),
-        "Origin": upstream_headers.get("Origin", embed_origin),
-    }
-
-    html = embed_html
-    if html is None:
-        html = fetch_text(embed_url, embed_headers, timeout_sec=DEFAULT_TIMEOUT)
-    if not html:
-        return {}
-
-    subtitles = merge_subtitle_tracks(
-        extract_jwplayer_subtitles(html, embed_url),
-        extract_playerjs_subtitles(html, embed_url),
-    )
-
-    stream_url = decode_hdfilmcehennemi_stream_url(html)
-    if not stream_url:
-        stream_url = extract_hdfilmcehennemi_content_url(html, embed_url)
-
-    if stream_url and is_probable_hls_manifest_url(stream_url):
-        playback_url = filmmakinesi_proxy_url(stream_url, embed_url)
-        return {
-            "url": playback_url,
-            "headers": make_playback_headers(stream_url, referer_hint=embed_url, origin_hint=embed_origin),
-            "subtitles": subtitles,
-        }
-
-    return {}
 
 
 def resolve_hdfilmcehennemi_known_embed_detail(page_url, upstream_headers):
@@ -2331,6 +2227,79 @@ def decrypt_cryptojs_aes_json(encrypted_json, passphrase):
         return json.loads(plaintext.decode("utf-8"))
     except Exception:
         return None
+
+
+def decrypt_dizipalw_rm_k(encrypted_json, passphrase):
+    if Cipher is None or algorithms is None or modes is None or PBKDF2HMAC is None or hashes is None:
+        return ""
+
+    try:
+        payload = json.loads(html_lib.unescape(encrypted_json or ""))
+        ciphertext = base64.b64decode(payload.get("ciphertext") or "")
+        salt = bytes.fromhex(payload.get("salt") or "")
+        iv = bytes.fromhex(payload.get("iv") or "")
+        key = PBKDF2HMAC(
+            algorithm=hashes.SHA512(),
+            length=32,
+            salt=salt,
+            iterations=999,
+        ).derive((passphrase or "").encode("utf-8"))
+        decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+        plaintext = pkcs7_unpad(decryptor.update(ciphertext) + decryptor.finalize())
+        return plaintext.decode("utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+
+
+def extract_dizipalw_passphrase(page_html, page_url, headers=None):
+    html = page_html or ""
+    m = RE_DIZIPALW_PASSPHRASE.search(html)
+    if m:
+        return decode_js_string_literal(m.group(1) or "").strip()
+
+    js_urls = []
+    for raw in RE_DIZIPALW_PAGELOAD_JS.findall(html):
+        js_urls.append(normalize_url(raw, page_url))
+    js_urls.append(normalize_url("/assets/js-dizipal/pageload.js?v=4v25", page_url))
+
+    for js_url in dedup_keep_order([url for url in js_urls if is_http_url(url)]):
+        js_headers = dict(headers or {})
+        js_headers.update({
+            "Accept": "application/javascript,text/javascript,*/*;q=0.8",
+            "Referer": page_url,
+            "Origin": origin_of(page_url) or DIZIPALW_BASE_DOMAIN,
+        })
+        js_text = fetch_text(js_url, js_headers, timeout_sec=DEFAULT_TIMEOUT)
+        m = RE_DIZIPALW_PASSPHRASE.search(js_text or "")
+        if m:
+            return decode_js_string_literal(m.group(1) or "").strip()
+
+    return ""
+
+
+def extract_dizipalw_iframe_url(page_html, page_url, headers=None, trace=None):
+    m = RE_DIZIPALW_DATA_RM_K.search(page_html or "")
+    if not m:
+        if trace is not None:
+            trace.append({"stage": "dizipalw_data_rm_k", "ok": False, "reason": "not_found"})
+        return ""
+
+    passphrase = extract_dizipalw_passphrase(page_html, page_url, headers=headers)
+    if not passphrase:
+        if trace is not None:
+            trace.append({"stage": "dizipalw_passphrase", "ok": False})
+        return ""
+
+    iframe_raw = decrypt_dizipalw_rm_k(m.group(1), passphrase)
+    iframe_url = normalize_url(iframe_raw, page_url)
+    ok = is_http_url(iframe_url)
+    if trace is not None:
+        trace.append({
+            "stage": "dizipalw_iframe",
+            "ok": ok,
+            "host": urlparse(iframe_url).hostname if ok else "",
+        })
+    return iframe_url if ok else ""
 
 
 def parse_js_string_literal(text, start):
@@ -2607,9 +2576,62 @@ def resolve_dizibal_detail(page_url, trace=None):
     return resolve_from_page_detail(embed_url, headers=embed_headers, depth=0, max_depth=3, trace=trace)
 
 
+def resolve_dizipalw_detail(page_url, headers=None, page_html=None, trace=None):
+    page_headers = dict(headers or build_page_headers(page_url))
+    page_headers.setdefault("Referer", DIZIPALW_BASE_DOMAIN + "/")
+    page_headers.setdefault("Origin", origin_of(page_url) or DIZIPALW_BASE_DOMAIN)
+
+    html = page_html
+    effective_page_url = page_url
+    if html is None:
+        html, effective_page_url, fetch_info = fetch_text_with_diagnostics(
+            page_url,
+            headers=page_headers,
+            timeout_sec=DEFAULT_TIMEOUT,
+        )
+        if not html:
+            if trace is not None:
+                entry = {"stage": "dizipalw_page_fetch", "url": page_url, "ok": False}
+                entry.update(fetch_info or {})
+                trace.append(entry)
+            return {}
+
+    effective_page_url = effective_page_url or page_url
+    iframe_url = extract_dizipalw_iframe_url(
+        html,
+        effective_page_url,
+        headers=page_headers,
+        trace=trace,
+    )
+    if not iframe_url:
+        return {}
+
+    embed_origin = origin_of(iframe_url) or "https://sn.dplayer82.site"
+    embed_headers = {
+        "User-Agent": page_headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
+        "Accept-Language": page_headers.get("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"),
+        "Referer": effective_page_url,
+        "Origin": origin_of(effective_page_url) or DIZIPALW_BASE_DOMAIN,
+    }
+    detail = resolve_pichive_embed_detail(iframe_url, embed_headers)
+    if detail.get("url") and trace is not None:
+        trace.append({
+            "stage": "dizipalw_stream",
+            "ok": True,
+            "iframe_host": urlparse(iframe_url).hostname or "",
+            "stream_host": urlparse(detail.get("url") or "").hostname or "",
+        })
+    return detail
+
+
 def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None):
     if is_dizibal_site_url(page_url):
         fast = resolve_dizibal_detail(page_url, trace=trace)
+        if fast.get("url"):
+            return fast
+
+    if is_dizipalw_site_url(page_url):
+        fast = resolve_dizipalw_detail(page_url, headers=headers, trace=trace)
         if fast.get("url"):
             return fast
 
@@ -2676,8 +2698,8 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None
         if fast.get("url"):
             return fast
 
-    if is_filmmakinesi_embed_url(effective_page_url):
-        fast = resolve_filmmakinesi_embed_detail(effective_page_url, headers, embed_html=html)
+    if is_dizipalw_site_url(effective_page_url):
+        fast = resolve_dizipalw_detail(effective_page_url, headers=headers, page_html=html, trace=trace)
         if fast.get("url"):
             return fast
 
@@ -2741,15 +2763,6 @@ def resolve_from_page_detail(page_url, headers, depth=0, max_depth=3, trace=None
 
         if is_pichive_embed_url(u):
             fast = resolve_pichive_embed_detail(u, {
-                "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
-                "Referer": effective_page_url,
-                "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
-            })
-            if fast.get("url"):
-                return fast
-
-        if is_filmmakinesi_embed_url(u):
-            fast = resolve_filmmakinesi_embed_detail(u, {
                 "User-Agent": headers.get("User-Agent", BASE_HEADERS["User-Agent"]),
                 "Referer": effective_page_url,
                 "Origin": origin_of(effective_page_url) or headers.get("Origin", BASE_HEADERS["Origin"]),
@@ -2968,30 +2981,21 @@ def manual_stream_detail_for_slugs(slug_candidates):
     return None
 
 
-def build_fullhd_targets(slug, sezon_no, bolum_no):
+def build_fullhd_targets(slug, sezon_no, bolum_no, prefer_series=False):
     base = FULLHD_BASE_DOMAIN
-    return [
+    series_targets = [
         f"{base}/{slug}/sezon-{sezon_no}/bolum-{bolum_no}/",
         f"{base}/{slug}/sezon-{sezon_no}/bolum-{bolum_no}",
         f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}/",
         f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}",
-        f"{base}/film/{slug}/",
-        f"{base}/film/{slug}",
+    ]
+    movie_targets = [
         f"{base}/{slug}/",
         f"{base}/{slug}",
+        f"{base}/film/{slug}/",
+        f"{base}/film/{slug}",
     ]
-
-
-def build_hdizipal_targets(slug, sezon_no, bolum_no):
-    base = HDIZIPAL_BASE_DOMAIN
-    clean_slug = (slug or "").strip().strip("/")
-    if not clean_slug:
-        return []
-
-    return [
-        f"{base}/dizi/{clean_slug}/{sezon_no}-sezon/{bolum_no}-bolum",
-        f"{base}/dizi/{clean_slug}/sezon-{sezon_no}/bolum-{bolum_no}",
-    ]
+    return series_targets + movie_targets if prefer_series else movie_targets + series_targets
 
 
 def build_dizipalbid_targets(slug, sezon_no, bolum_no):
@@ -3035,6 +3039,29 @@ def build_dizibal_targets(slug, sezon_no, bolum_no):
         targets.append(f"{base}/series/{variant}/season/{sezon_no}/episode/{bolum_no}")
         targets.append(f"{base}/anime/{variant}/season/{sezon_no}/episode/{bolum_no}")
         targets.append(f"{base}/movie/{variant}")
+    return dedup_keep_order(targets)
+
+
+def build_dizipalw_targets(slug, sezon_no, bolum_no):
+    base = DIZIPALW_BASE_DOMAIN
+    clean_slug = (slug or "").strip().strip("/")
+    if not clean_slug:
+        return []
+
+    variants = [clean_slug]
+    if clean_slug.endswith("-izle"):
+        variants.append(clean_slug[:-5])
+    else:
+        variants.append(clean_slug + "-izle")
+
+    targets = []
+    for variant in dedup_keep_order([v.strip("-/") for v in variants if v.strip("-/")]):
+        targets.append(f"{base}/dizi/{variant}/{sezon_no}-sezon-{bolum_no}-bolum")
+        targets.append(f"{base}/dizi/{variant}/{sezon_no}-sezon-{bolum_no}-bolum/")
+        targets.append(f"{base}/bolum/{variant}-{sezon_no}-sezon-{bolum_no}-bolum-izle")
+        targets.append(f"{base}/bolum/{variant}-{sezon_no}-sezon-{bolum_no}-bolum-izle/")
+        targets.append(f"{base}/{variant}")
+        targets.append(f"{base}/{variant}/")
     return dedup_keep_order(targets)
 
 
@@ -3096,35 +3123,6 @@ def build_hdfilmizleto_targets(slug, sezon_no, bolum_no):
     return targets
 
 
-def build_filmmakinesi_targets(slug, sezon_no, bolum_no, prefer_series=False):
-    base = FILMMAKINESI_BASE_DOMAIN
-    clean_slug = (slug or "").strip().strip("/")
-    if not clean_slug:
-        return []
-
-    variants = [clean_slug]
-    if not clean_slug.endswith("-izle"):
-        variants.append(clean_slug + "-izle")
-
-    targets = []
-    for variant in dedup_keep_order(variants):
-        series_targets = [
-            f"{base}/dizi/{variant}/sezon-{sezon_no}/bolum-{bolum_no}/",
-            f"{base}/dizi/{variant}/sezon-{sezon_no}/bolum-{bolum_no}",
-        ]
-        movie_targets = [
-            f"{base}/film/{variant}/",
-            f"{base}/film/{variant}",
-        ]
-
-        if prefer_series:
-            targets.extend(series_targets)
-        else:
-            targets.extend(movie_targets)
-            targets.extend(series_targets)
-    return targets
-
-
 def build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no):
     base = FULLHDFILMIZLESENE_BASE_DOMAIN
     clean_slug = (slug or "").strip().strip("/")
@@ -3150,7 +3148,31 @@ def build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no):
     return dedup_keep_order(targets)
 
 
-def source_order_for_yayin(slug_candidates):
+def build_canlitvvolo_targets(slug, sezon_no="", bolum_no=""):
+    clean_slug = (slug or "").strip().strip("/").lower()
+    allowed_slugs = {"tgrt-belgesel", "tgrt-belgesel-izle", "tgrtbelgesel"}
+    if clean_slug not in allowed_slugs:
+        return []
+
+    permalink = CANLITVVOLO_TGRT_BELGESEL_PERMALINK.strip("/")
+    return [f"{CANLITVVOLO_BASE_DOMAIN}/{permalink}/?yayin=2"]
+
+
+def candidate_limit_for_source(source_name, prefer_series=False):
+    limits = {
+        "filmhane": 6,
+        "fullhd": 12,
+        "dizibal": 9,
+        "hdfilmcehennemi": 8,
+        "hdfilmizleto": 8,
+        "fullhdfilmizlesene": 8,
+        "dizipalw": 4,
+        "canlitvvolo": 1,
+    }
+    return limits.get(source_name, 8)
+
+
+def source_order_for_yayin(slug_candidates, prefer_series=False):
     hint = (request.args.get("src") or request.args.get("source") or "").strip().lower()
     source_aliases = {
         "hdfilmcehennemi.direct": "hdfilmcehennemi",
@@ -3162,14 +3184,21 @@ def source_order_for_yayin(slug_candidates):
         "fullhdfilmizlesene": "fullhdfilmizlesene",
         "dizibal.com": "dizibal",
         "dizibal": "dizibal",
+        "dizipalw.com": "dizipalw",
+        "dizipalw": "dizipalw",
+        "tv.canlitvvolo.com": "canlitvvolo",
+        "canlitvvolo.com": "canlitvvolo",
+        "canlitvvolo": "canlitvvolo",
+        "volotv": "canlitvvolo",
     }
     hint = source_aliases.get(hint, hint)
-    sources = ["filmhane", "fullhd", "hdizipal"]
-    optional_sources = ["dizibal", "hdfilmizleto", "fullhdfilmizlesene", "hdfilmcehennemi"]
+    sources = ["filmhane", "fullhd"] if prefer_series else ["fullhd", "filmhane"]
+    optional_sources = ["dizibal", "fullhdfilmizlesene"]
+    explicit_only_sources = ["hdfilmizleto", "hdfilmcehennemi", "dizipalw", "canlitvvolo"]
     if hint == "hdfilmcehennemi":
         return [hint]
-    if hint in sources + optional_sources:
-        return [hint] + [source for source in sources + optional_sources if source != hint]
+    if hint in sources + optional_sources + explicit_only_sources:
+        return [hint]
 
     if any(is_dizibal_id(s) for s in slug_candidates or []):
         return ["dizibal"] + sources + [source for source in optional_sources if source != "dizibal"]
@@ -3181,9 +3210,6 @@ def source_order_for_yayin(slug_candidates):
         or fullhdfilmizlesene_vidmoxy_urls_for_slug(primary)
     ):
         return ["fullhdfilmizlesene"] + sources + [source for source in optional_sources if source != "fullhdfilmizlesene"]
-
-    if re.search(r"-fm\d+$", primary):
-        return []
 
     return sources + optional_sources
 
@@ -3309,6 +3335,112 @@ def fetch_canlitv_stream(channel_id, referer_url=""):
     return ""
 
 
+def request_ip_for_remote_api(default="176.33.68.159"):
+    try:
+        for header_name in ("CF-Connecting-IP", "X-Forwarded-For", "X-Real-IP"):
+            raw_value = request.headers.get(header_name, "")
+            if raw_value:
+                return raw_value.split(",")[0].strip()
+        if request.remote_addr:
+            return request.remote_addr
+    except RuntimeError:
+        pass
+    return default
+
+
+def parse_canlitvvolo_page(page_url):
+    parsed = urlparse(page_url or "")
+    permalink = (parsed.path or "").strip("/")
+    if permalink:
+        permalink = permalink + "/"
+    else:
+        permalink = CANLITVVOLO_TGRT_BELGESEL_PERMALINK
+
+    query = parse_qs(parsed.query or "")
+    yayin_raw = (query.get("yayin") or ["2"])[0]
+    try:
+        yayin_no = int(str(yayin_raw).strip() or "2")
+    except ValueError:
+        yayin_no = 2
+    return permalink, yayin_no
+
+
+def extract_canlitvvolo_direct_url(stream_url):
+    parsed = urlparse(stream_url or "")
+    query = parse_qs(parsed.query or "")
+    direct = (query.get("url") or [""])[0]
+    if is_http_url(direct):
+        return direct
+    return stream_url
+
+
+def fetch_canlitvvolo_stream_detail(page_url, trace=None):
+    if not CANLITVVOLO_API_URL:
+        return {}
+
+    permalink, yayin_no = parse_canlitvvolo_page(page_url)
+    referer_url = f"{CANLITVVOLO_BASE_DOMAIN}/{permalink}?yayin={yayin_no}"
+    payload = {
+        "permalink": permalink,
+        "yayin": yayin_no,
+        "ip": request_ip_for_remote_api(),
+        "ipcountry": "TR",
+        "mobile": 0,
+    }
+    headers = {
+        "User-Agent": BASE_HEADERS["User-Agent"],
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Content-Type": "application/json;charset=UTF-8",
+        "Origin": CANLITVVOLO_BASE_DOMAIN,
+        "Referer": referer_url,
+        "Cache-Control": "no-cache",
+    }
+
+    try:
+        response = SESSION.post(
+            CANLITVVOLO_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=8,
+            allow_redirects=True,
+        )
+        if response.status_code >= 400:
+            if trace is not None:
+                trace.append({"stage": "canlitvvolo_api", "ok": False, "status": response.status_code})
+            return {}
+        data = response.json()
+    except Exception as exc:
+        if trace is not None:
+            trace.append({"stage": "canlitvvolo_api", "ok": False, "error": str(exc)[:160]})
+        return {}
+
+    stream_url = normalize_url(str(data.get("streamUrl") or ""), referer_url)
+    stream_url = extract_canlitvvolo_direct_url(stream_url)
+    if not is_http_url(stream_url):
+        if trace is not None:
+            trace.append({"stage": "canlitvvolo_stream", "ok": False, "playerType": data.get("playerType") or ""})
+        return {}
+
+    if trace is not None:
+        trace.append({
+            "stage": "canlitvvolo_stream",
+            "ok": True,
+            "channelName": data.get("channelName") or "",
+            "yayinNo": data.get("yayinNo") or yayin_no,
+            "stream_host": urlparse(stream_url).hostname or "",
+        })
+
+    return {
+        "url": stream_url,
+        "headers": make_playback_headers(
+            stream_url,
+            referer_hint=referer_url,
+            origin_hint=CANLITVVOLO_BASE_DOMAIN,
+        ),
+    }
+
+
 def fetch_yabantv_stream():
     headers = build_page_headers(YABANTV_BROADCAST_URL)
     html = fetch_text(YABANTV_BROADCAST_URL, headers=headers, timeout_sec=DEFAULT_TIMEOUT)
@@ -3382,54 +3514,6 @@ def proxy_hdfilmcehennemi_playlist():
 
     final_url = response.url or target_url
     rewritten = rewrite_hdfilmcehennemi_playlist(body, final_url, referer_url)
-    return Response(
-        rewritten,
-        status=200,
-        headers={
-            "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
-            "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "public, max-age=0, s-maxage=15, stale-while-revalidate=60",
-        },
-    )
-
-
-@app.route("/filmmakinesi/playlist.m3u8", methods=["GET", "HEAD"])
-def proxy_filmmakinesi_playlist():
-    target_url = unquote((request.args.get("url") or "").strip())
-    referer_url = unquote((request.args.get("ref") or "").strip())
-    if not is_http_url(target_url):
-        return "Gecersiz URL", 400
-    if not is_filmmakinesi_hls_url(target_url):
-        return "Kaynak desteklenmiyor.", 400
-
-    embed_origin = origin_of(referer_url) or "https://closeload.filmmakinesi.to"
-    headers = {
-        "User-Agent": BASE_HEADERS["User-Agent"],
-        "Accept": "application/vnd.apple.mpegurl, application/x-mpegURL, */*",
-        "Referer": referer_url or (embed_origin + "/"),
-        "Origin": embed_origin,
-    }
-
-    try:
-        response = SESSION.get(
-            target_url,
-            headers=headers,
-            timeout=DEFAULT_TIMEOUT,
-            allow_redirects=True,
-        )
-    except Exception:
-        return "Playlist alinamadi.", 502
-
-    if response.status_code >= 400:
-        return "Playlist bulunamadi.", response.status_code
-
-    response.encoding = response.encoding or "utf-8"
-    body = response.text or ""
-    if not body.lstrip().startswith("#EXTM3U"):
-        return "Gecersiz playlist.", 502
-
-    final_url = response.url or target_url
-    rewritten = rewrite_filmmakinesi_playlist(body, final_url, referer_url)
     return Response(
         rewritten,
         status=200,
@@ -3666,7 +3750,7 @@ def resolve_universal():
         return redirect_light(cached, ttl=SHORT_TTL)
 
     dom = origin_of(target_url)
-    headers = build_source_page_headers(target_url, "filmmakinesi" if is_filmmakinesi_site_url(target_url) else "")
+    headers = build_source_page_headers(target_url)
 
     detail = resolve_from_page_detail(target_url, headers=headers, max_depth=3)
     stream_url = detail.get("url") or ""
@@ -3778,28 +3862,29 @@ def stream_dizi(dizi, bolum):
     mapped_candidates = []
     filmhane_candidates = []
     fullhd_candidates = []
-    hdizipal_candidates = []
     dizibal_candidates = []
+    dizipalw_candidates = []
     hdfilmcehennemi_candidates = []
     hdfilmizleto_candidates = []
-    filmmakinesi_candidates = []
     fullhdfilmizlesene_candidates = []
+    canlitvvolo_candidates = []
     for slug in slug_candidates:
         if slug in films:
             mapped_candidates.append(films[slug])
 
     for slug in slug_candidates:
-        filmhane_candidates.append(f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}")
-        filmhane_candidates.append(f"{base}/film/{slug}")
+        series_targets = [f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}"]
+        movie_targets = [f"{base}/film/{slug}"]
+        filmhane_candidates.extend(series_targets + movie_targets if prefer_series_sources else movie_targets + series_targets)
 
     for slug in slug_candidates:
-        fullhd_candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no))
-
-    for slug in slug_candidates:
-        hdizipal_candidates.extend(build_hdizipal_targets(slug, sezon_no, bolum_no))
+        fullhd_candidates.extend(build_fullhd_targets(slug, sezon_no, bolum_no, prefer_series=prefer_series_sources))
 
     for slug in slug_candidates:
         dizibal_candidates.extend(build_dizibal_targets(slug, sezon_no, bolum_no))
+
+    for slug in slug_candidates:
+        dizipalw_candidates.extend(build_dizipalw_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
         hdfilmcehennemi_candidates.extend(build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no))
@@ -3808,29 +3893,22 @@ def stream_dizi(dizi, bolum):
         hdfilmizleto_candidates.extend(build_hdfilmizleto_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
-        filmmakinesi_candidates.extend(
-            build_filmmakinesi_targets(
-                slug,
-                sezon_no,
-                bolum_no,
-                prefer_series=prefer_series_sources,
-            )
-        )
+        fullhdfilmizlesene_candidates.extend(build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
-        fullhdfilmizlesene_candidates.extend(build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no))
+        canlitvvolo_candidates.extend(build_canlitvvolo_targets(slug, sezon_no, bolum_no))
 
     source_candidates = {
         "filmhane": filmhane_candidates,
         "fullhd": fullhd_candidates,
-        "hdizipal": hdizipal_candidates,
         "dizibal": dizibal_candidates,
+        "dizipalw": dizipalw_candidates,
         "hdfilmcehennemi": hdfilmcehennemi_candidates,
         "hdfilmizleto": hdfilmizleto_candidates,
-        "filmmakinesi": filmmakinesi_candidates,
         "fullhdfilmizlesene": fullhdfilmizlesene_candidates,
+        "canlitvvolo": canlitvvolo_candidates,
     }
-    source_order = source_order_for_yayin(slug_candidates)
+    source_order = source_order_for_yayin(slug_candidates, prefer_series=prefer_series_sources)
     source_lookup = {}
     for source_name, source_list in source_candidates.items():
         for item in source_list:
@@ -3840,7 +3918,8 @@ def stream_dizi(dizi, bolum):
 
     candidates = list(mapped_candidates)
     for source in source_order:
-        candidates.extend(source_candidates.get(source, []))
+        source_list = source_candidates.get(source, [])
+        candidates.extend(source_list[:candidate_limit_for_source(source, prefer_series_sources)])
 
     # dedup keep order
     ordered_candidates = []
@@ -3852,7 +3931,8 @@ def stream_dizi(dizi, bolum):
         ordered_candidates.append(c)
 
     # token links carry a long expiry, but keep the in-memory cache modest.
-    ck = f"yayin:{dizi}:{bolum}"
+    source_hint_key = (request.args.get("src") or request.args.get("source") or "").strip().lower()
+    ck = f"yayin:{dizi}:{bolum}:{source_hint_key}" if source_hint_key else f"yayin:{dizi}:{bolum}"
     debug_enabled = wants_debug()
     debug_attempts = []
     manual_detail = manual_stream_detail_for_slugs(slug_candidates)
@@ -3897,12 +3977,27 @@ def stream_dizi(dizi, bolum):
             )
         return redirect_light(cached, ttl=SHORT_TTL)
 
+    resolve_started_at = time.time()
+    resolve_budget_seconds = 45 if debug_enabled else 20
+
     for target_page in ordered_candidates:
+        if time.time() - resolve_started_at > resolve_budget_seconds:
+            if debug_enabled:
+                debug_attempts.append({
+                    "stage": "resolve_budget_exhausted",
+                    "elapsed_ms": int((time.time() - resolve_started_at) * 1000),
+                    "candidateCount": len(ordered_candidates),
+                })
+            break
+
         source_name = source_lookup.get(target_page, "unknown")
         headers = build_source_page_headers(target_page, source_name)
         trace = []
         started = time.time()
-        detail = resolve_from_page_detail(target_page, headers=headers, max_depth=3, trace=trace if debug_enabled else None)
+        if source_name == "canlitvvolo":
+            detail = fetch_canlitvvolo_stream_detail(target_page, trace=trace if debug_enabled else None)
+        else:
+            detail = resolve_from_page_detail(target_page, headers=headers, max_depth=3, trace=trace if debug_enabled else None)
         stream_url = detail.get("url") or ""
         if debug_enabled:
             debug_attempts.append({
