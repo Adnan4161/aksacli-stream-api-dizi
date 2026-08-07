@@ -32,7 +32,7 @@ except Exception:
 
 app = Flask(__name__)
 
-VERSION = "V223"
+VERSION = "V225"
 
 BASE_HEADERS = {
     "User-Agent": (
@@ -53,7 +53,7 @@ DIZIBAL_BASE_DOMAIN = os.getenv("DIZIBAL_BASE_DOMAIN", "https://dizibal.com").rs
 HDFILMCEHENNEMI_BASE_DOMAIN = os.getenv("HDFILMCEHENNEMI_BASE_DOMAIN", "https://hdfilmcehennemi.direct").rstrip("/")
 HDFILMCEHENNEMI_EMBED_DOMAIN = os.getenv("HDFILMCEHENNEMI_EMBED_DOMAIN", "https://hdfilmcehennemi.mobi").rstrip("/")
 HDFILMIZLETO_BASE_DOMAIN = os.getenv("HDFILMIZLETO_BASE_DOMAIN", "https://www.hdfilmizle.to").rstrip("/")
-FULLHDFILMIZLESENE_BASE_DOMAIN = os.getenv("FULLHDFILMIZLESENE_BASE_DOMAIN", "https://www.fullhdfilmizlesene.life").rstrip("/")
+FULLHDFILMIZLESENE_BASE_DOMAIN = os.getenv("FULLHDFILMIZLESENE_BASE_DOMAIN", "https://www.fullhdfilmizlesene.mx").rstrip("/")
 VAPLAYER_STREAM_API_URL = os.getenv("VAPLAYER_STREAM_API_URL", "https://streamdata.vaplayer.ru/api.php").strip()
 YABANTV_BROADCAST_URL = os.getenv("YABANTV_BROADCAST_URL", "https://www.yabantv.com/broadcast").strip()
 CANLITV_EMBED_DOMAINS = tuple(
@@ -3163,11 +3163,7 @@ def candidate_limit_for_source(source_name, prefer_series=False):
         "filmhane": 6,
         "fullhd": 12,
         "dizibal": 9,
-        "hdfilmcehennemi": 8,
-        "hdfilmizleto": 8,
-        "fullhdfilmizlesene": 8,
-        "dizipalw": 4,
-        "canlitvvolo": 1,
+        "fullhdfilmizlesene": 4,
     }
     return limits.get(source_name, 8)
 
@@ -3175,41 +3171,26 @@ def candidate_limit_for_source(source_name, prefer_series=False):
 def source_order_for_yayin(slug_candidates, prefer_series=False):
     hint = (request.args.get("src") or request.args.get("source") or "").strip().lower()
     source_aliases = {
-        "hdfilmcehennemi.direct": "hdfilmcehennemi",
-        "hdfilmcehennemi": "hdfilmcehennemi",
-        "hdf": "hdfilmcehennemi",
-        "hdfilmizle": "hdfilmizleto",
-        "hdfilmizle.to": "hdfilmizleto",
-        "fullhdfilmizlesene.life": "fullhdfilmizlesene",
-        "fullhdfilmizlesene": "fullhdfilmizlesene",
+        "filmhane": "filmhane",
+        "filmhane.shop": "filmhane",
+        "fullhd": "fullhd",
+        "fullhdfilmizlebox": "fullhd",
+        "fullhdfilmizlebox.org": "fullhd",
         "dizibal.com": "dizibal",
         "dizibal": "dizibal",
-        "dizipalw.com": "dizipalw",
-        "dizipalw": "dizipalw",
-        "tv.canlitvvolo.com": "canlitvvolo",
-        "canlitvvolo.com": "canlitvvolo",
-        "canlitvvolo": "canlitvvolo",
-        "volotv": "canlitvvolo",
+        "fullhdfilmizlesene": "fullhdfilmizlesene",
+        "fullhdfilmizlesene.mx": "fullhdfilmizlesene",
+        "www.fullhdfilmizlesene.mx": "fullhdfilmizlesene",
     }
     hint = source_aliases.get(hint, hint)
     sources = ["filmhane", "fullhd"] if prefer_series else ["fullhd", "filmhane"]
-    optional_sources = ["dizibal", "fullhdfilmizlesene"]
-    explicit_only_sources = ["hdfilmizleto", "hdfilmcehennemi", "dizipalw", "canlitvvolo"]
-    if hint == "hdfilmcehennemi":
-        return [hint]
-    if hint in sources + optional_sources + explicit_only_sources:
+    optional_sources = ["dizibal"]
+    hint_only_sources = ["fullhdfilmizlesene"]
+    if hint in sources + optional_sources + hint_only_sources:
         return [hint]
 
     if any(is_dizibal_id(s) for s in slug_candidates or []):
         return ["dizibal"] + sources + [source for source in optional_sources if source != "dizibal"]
-
-    primary = (slug_candidates[0] if slug_candidates else "").lower()
-    if (
-        fullhdfilmizlesene_rapidvid_id_for_slug(primary)
-        or fullhdfilmizlesene_sobreat_ids_for_slug(primary)
-        or fullhdfilmizlesene_vidmoxy_urls_for_slug(primary)
-    ):
-        return ["fullhdfilmizlesene"] + sources + [source for source in optional_sources if source != "fullhdfilmizlesene"]
 
     return sources + optional_sources
 
@@ -3863,11 +3844,7 @@ def stream_dizi(dizi, bolum):
     filmhane_candidates = []
     fullhd_candidates = []
     dizibal_candidates = []
-    dizipalw_candidates = []
-    hdfilmcehennemi_candidates = []
-    hdfilmizleto_candidates = []
     fullhdfilmizlesene_candidates = []
-    canlitvvolo_candidates = []
     for slug in slug_candidates:
         if slug in films:
             mapped_candidates.append(films[slug])
@@ -3884,29 +3861,13 @@ def stream_dizi(dizi, bolum):
         dizibal_candidates.extend(build_dizibal_targets(slug, sezon_no, bolum_no))
 
     for slug in slug_candidates:
-        dizipalw_candidates.extend(build_dizipalw_targets(slug, sezon_no, bolum_no))
-
-    for slug in slug_candidates:
-        hdfilmcehennemi_candidates.extend(build_hdfilmcehennemi_targets(slug, sezon_no, bolum_no))
-
-    for slug in slug_candidates:
-        hdfilmizleto_candidates.extend(build_hdfilmizleto_targets(slug, sezon_no, bolum_no))
-
-    for slug in slug_candidates:
         fullhdfilmizlesene_candidates.extend(build_fullhdfilmizlesene_targets(slug, sezon_no, bolum_no))
-
-    for slug in slug_candidates:
-        canlitvvolo_candidates.extend(build_canlitvvolo_targets(slug, sezon_no, bolum_no))
 
     source_candidates = {
         "filmhane": filmhane_candidates,
         "fullhd": fullhd_candidates,
         "dizibal": dizibal_candidates,
-        "dizipalw": dizipalw_candidates,
-        "hdfilmcehennemi": hdfilmcehennemi_candidates,
-        "hdfilmizleto": hdfilmizleto_candidates,
         "fullhdfilmizlesene": fullhdfilmizlesene_candidates,
-        "canlitvvolo": canlitvvolo_candidates,
     }
     source_order = source_order_for_yayin(slug_candidates, prefer_series=prefer_series_sources)
     source_lookup = {}
@@ -3994,10 +3955,7 @@ def stream_dizi(dizi, bolum):
         headers = build_source_page_headers(target_page, source_name)
         trace = []
         started = time.time()
-        if source_name == "canlitvvolo":
-            detail = fetch_canlitvvolo_stream_detail(target_page, trace=trace if debug_enabled else None)
-        else:
-            detail = resolve_from_page_detail(target_page, headers=headers, max_depth=3, trace=trace if debug_enabled else None)
+        detail = resolve_from_page_detail(target_page, headers=headers, max_depth=3, trace=trace if debug_enabled else None)
         stream_url = detail.get("url") or ""
         if debug_enabled:
             debug_attempts.append({
