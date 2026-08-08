@@ -2984,10 +2984,10 @@ def manual_stream_detail_for_slugs(slug_candidates):
 def build_fullhd_targets(slug, sezon_no, bolum_no, prefer_series=False):
     base = FULLHD_BASE_DOMAIN
     series_targets = [
-        f"{base}/{slug}/sezon-{sezon_no}/bolum-{bolum_no}/",
-        f"{base}/{slug}/sezon-{sezon_no}/bolum-{bolum_no}",
         f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}/",
         f"{base}/dizi/{slug}/sezon-{sezon_no}/bolum-{bolum_no}",
+        f"{base}/{slug}/sezon-{sezon_no}/bolum-{bolum_no}/",
+        f"{base}/{slug}/sezon-{sezon_no}/bolum-{bolum_no}",
     ]
     movie_targets = [
         f"{base}/{slug}/",
@@ -3191,6 +3191,10 @@ def source_order_for_yayin(slug_candidates, prefer_series=False):
 
     if any(is_dizibal_id(s) for s in slug_candidates or []):
         return ["dizibal"] + sources + [source for source in optional_sources if source != "dizibal"]
+
+    primary_slug = (slug_candidates or [""])[0].strip().lower()
+    if prefer_series and primary_slug and not primary_slug.endswith("-izle"):
+        return ["fullhd", "filmhane"] + optional_sources
 
     return sources + optional_sources
 
